@@ -1,0 +1,2 @@
+#!/bin/sh
+git --work-tree=/home/qualintregas/public_html/caixa --git-dir=/home/qualintregas/caixa.git checkout -f

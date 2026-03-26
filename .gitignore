@@ -1,0 +1,37 @@
+# Dependências
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Arquivos de configuração de banco (segurança)
+# Ignora todos os .ini em configBanco, exceto tsbc.ini
+configBanco/*.ini
+!configBanco/tsbc.ini
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build
+dist/
+build/
+
+# Documentação
+docs/
+
+# Diretório de testes
+testes/
+
+.env
+.env
