@@ -38,6 +38,16 @@ import { error as displayError, log as displayLog } from "../utils/displayLogWeb
  * @property {Object} body   - Corpo da resposta JSON
  */
 
+function hasValue(v) {
+  if (v == null) return false;
+  const s = String(v).trim();
+  return s !== "" && s !== "0000-00-00 00:00:00";
+}
+
+function isFinalizado(enderecoItem) {
+  return hasValue(enderecoItem?.saida);
+}
+
 /**
  * Verifica se o módulo cheguei está ativo para o domínio (gates 2, 3 e 4).
  * @param {string} domain
@@ -208,7 +218,7 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
   let servicos = [];
   try {
     servicos = await entidade.select(
-      { id: "" },
+      { id: "", retorno: "" },
       "servico",
       "idMotoboy = :idMotoboy AND status = :status",
       { idMotoboy: idProf, status: "A" }
@@ -239,24 +249,27 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
   for (const servico of servicos) {
     const idServico = servico?.id;
     if (!idServico) continue;
+    const servicoTemRetorno = String(servico?.retorno || "").toUpperCase() === "S";
 
     displayLog("info", "[chegueiEndereco] idServico", idServico);
-    // Listar enderecoServico sem chegada para este serviço (la/lo da tabela endereco)
-    let enderecos = [];
+    // Lista todos os endereços do serviço para avaliar retorno/finalização e filtra os sem chegada.
+    let enderecosServico = [];
     try {
-      enderecos = await entidade.select(
+      enderecosServico = await entidade.select(
         [
           "enderecoServico.idEndereco AS idEndereco",
+          "enderecoServico.ponto AS ponto",
+          "enderecoServico.saida AS saida",
           "endereco.la AS la",
           "endereco.lo AS lo",
           "enderecoServico.chegada AS chegada",
         ],
         "enderecoServico INNER JOIN endereco ON endereco.id = enderecoServico.idEndereco",
-        "enderecoServico.idServico = :idServico AND (enderecoServico.chegada IS NULL OR enderecoServico.chegada = '0000-00-00 00:00:00')",
+        "enderecoServico.idServico = :idServico",
         { idServico }
       );
-      displayLog("info", "[chegueiEndereco] enderecos", enderecos);
-      if (!Array.isArray(enderecos)) enderecos = [];
+      if (!Array.isArray(enderecosServico)) enderecosServico = [];
+      displayLog("info", "[chegueiEndereco] enderecosServico", { idServico, total: enderecosServico.length });
     } catch (err) {
       displayError("[chegueiEndereco] Erro ao listar enderecoServico:", err.message);
       await logController.inserirLog({
@@ -271,8 +284,18 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
       continue;
     }
 
-    for (const endServ of enderecos) {
-    
+    const enderecosSemChegada = enderecosServico.filter((enderecoItem) => !hasValue(enderecoItem?.chegada));
+    if (enderecosSemChegada.length === 0) continue;
+
+    const pontoRetorno = servicoTemRetorno
+      ? enderecosServico.reduce((maxPonto, enderecoItem) => {
+          const ponto = parseInt(enderecoItem?.ponto, 10);
+          if (!Number.isFinite(ponto)) return maxPonto;
+          return Math.max(maxPonto, ponto);
+        }, -Infinity)
+      : null;
+
+    for (const endServ of enderecosSemChegada) {
       const idEndereco = endServ.idEndereco;
       const laEnd = parseFloat(endServ.la);
       const loEnd = parseFloat(endServ.lo);
@@ -292,6 +315,29 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
           loEndereco: loEnd,
         });
         continue;
+      }
+
+      const pontoAtual = parseInt(endServ?.ponto, 10);
+      const ehRetorno =
+        servicoTemRetorno &&
+        Number.isFinite(pontoRetorno) &&
+        Number.isFinite(pontoAtual) &&
+        pontoAtual === pontoRetorno;
+
+      if (ehRetorno) {
+        const outrosNaoFinalizados = enderecosServico.filter(
+          (enderecoItem) => String(enderecoItem?.idEndereco) !== String(idEndereco) && !isFinalizado(enderecoItem)
+        );
+        if (outrosNaoFinalizados.length > 0) {
+          processados.push({
+            idServico,
+            idEndereco,
+            acao: "retorno_bloqueado",
+            message: "Retorno aguardando finalização dos demais pontos",
+            pendentes: outrosNaoFinalizados.map((item) => item.idEndereco),
+          });
+          continue;
+        }
       }
 
       displayLog("info", "[chegueiEndereco] confirmarProfissional", msgConfigApp.confirmarProfissional);
