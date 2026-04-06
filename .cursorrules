@@ -1,0 +1,201 @@
+# Regras do Projeto: mapp-location-prof
+
+## 1. Visão Geral
+- **Propósito:** Gestão de logística, rastreamento de profissionais (geofencing) e automação de CRM/atendimento via WhatsApp.
+- **Problema que resolve:** Automatiza o registro de chegada de profissionais em endereços ("Cheguei no Endereço") via geolocalização e gerencia fluxos de conversa inteligentes com suporte a IA.
+- **Público/Sistema:** Empresas de logística, motofrete e serviços que consomem a API para monitorar frotas e automatizar o atendimento ao cliente final.
+
+---
+
+## 2. Stack Tecnológica
+- **Linguagem:** Node.js (v20+) com suporte nativo a ES Modules (`"type": "module"`).
+- **Framework Web:** Express 5.x.
+- **Banco de Dados:** MySQL (via `mysql2/promise`) com arquitetura multitenant dinâmica.
+- **Busca Vetorial:** Supabase (`@supabase/supabase-js`) para base de conhecimento de IA.
+- **Automação/IA:** Integração com n8n (webhooks) e OpenAI (via n8n).
+- **Utilitários Principais:**
+  - `node-cron`: Agendamento de polling de localizações.
+  - `p-limit`: Controle de concorrência em processamentos em lote.
+  - `ini`: Parsing de arquivos de configuração de banco de dados.
+  - `dotenv`: Gestão de variáveis de ambiente.
+
+---
+
+## 3. Estrutura de Pastas
+```
+mapp-location-prof/
+├── configBanco/        → Arquivos .ini de credenciais por tenant (ex: logmappbc.ini)
+├── controller/         → Lógica de negócio e orquestração
+│   ├── whatsapp/       → Controllers de mensagens, Kanban e integração Meta/IA
+│   └── modulos/        → Configurações de módulos específicos por cliente
+├── db/                 → Camada de persistência
+│   ├── dbFactory.js    → Pools de conexão dinâmicos por domínio
+│   ├── Entidade.js     → Query Builder / abstração de CRUD (usar SEMPRE)
+│   └── iniLoader.js    → Carrega credenciais de .ini ou banco central
+├── middleware/         → Filtros de requisição
+│   ├── authProfissionaisLocalizacoes.js  → Autenticação via API Key
+│   ├── decryptBody.js  → CRÍTICO: descriptografia obrigatória do body
+│   └── tenantDb.js     → Identifica o cliente e injeta o pool de banco
+├── routes/             → Endpoints da API (todas sob /api/v1)
+├── services/           → Lógica pesada, geofencing (ex: chegueiEnderecoService.js)
+├── utils/              → Helpers: criptografia, geo-cálculos, logs, datas, mídia
+└── workers/            → Processamento paralelo (ex: parseJsonWorker.js)
+```
+
+---
+
+## 4. Padrões de Código
+
+### Nomenclatura
+- Funções e variáveis: `camelCase`
+- Classes: `PascalCase` (ex: `Entidade.js`)
+- Arquivos utilitários: `camelCase` (ex: `dateHelper.js`)
+
+### Assincronismo
+- Usar **sempre** `async/await`. Nunca `.then()/.catch()` em código novo.
+
+### Módulos (ESM obrigatório)
+- Sempre usar `import/export`. **NUNCA** `require/module.exports`.
+- Extensão `.js` é obrigatória em todos os imports locais:
+  ```js
+  import { calcularDistancia } from "./utils/geoHelper.js";
+  ```
+
+### Tratamento de Erros
+- Todo `async` deve ter `try/catch`.
+- Logs via `utils/displayLogWebhook.js` — nunca `console.log` direto:
+  ```js
+  import { displayLog, displayWarn, displayError } from "./utils/displayLogWebhook.js";
+  ```
+- Logs são condicionados a `DISPLAY_LOG_WEBHOOK=true` no `.env`.
+
+### Resposta padrão da API
+```js
+// Sucesso
+res.json({ success: true, message: "Descrição", data: [...] });
+
+// Erro
+res.status(400).json({ error: "CODIGO_ERRO", message: "Descrição legível" });
+```
+
+---
+
+## 5. Banco de Dados
+
+### Multitenancy — regra crítica
+- Cada cliente tem banco MySQL próprio com credenciais em `configBanco/*.ini`.
+- **Sempre** usar `Entidade.create(domain)` para garantir a conexão do tenant correto:
+  ```js
+  const entidade = Entidade.create(domain);
+  const resultado = await entidade.select("motoboy", { id: profissionalId });
+  ```
+- **NUNCA** instanciar conexão direta fora do `Entidade.create()`.
+
+### Banco Central (`MD_CLMAPP`)
+- Usado para configurações de agentes, Kanban e logs globais.
+- Separado dos bancos de tenant — não misturar queries entre eles.
+
+### Tabelas principais
+- `motoboy`, `servico`, `enderecoServico`, `mensagem`, `modulos`, `agente_kanban_monitoramento`
+
+### Regras de query
+- Usar **sempre** Prepared Statements via `Entidade`. Nunca SQL puro interpolado.
+- **NUNCA**: `"SELECT * FROM motoboy WHERE id = " + id`
+- **SEMPRE**: via métodos da classe `Entidade`
+
+---
+
+## 6. Rotas da API
+
+| Método | Rota | Descrição | Middlewares |
+|--------|------|-----------|-------------|
+| GET | `/api/v1/status` | Verifica se a API está ativa | — |
+| GET | `/api/v1/health` | Saúde do sistema e uptime | — |
+| POST | `/api/v1/profissionais-localizacoes` | Recebe lote de coordenadas GPS | `authProfissionaisLocalizacoes`, `decryptBody`, `tenantDb` |
+| POST | `/api/v1/agente/buscar-base-conhecimento` | Busca semântica no Supabase | `tenantDb` |
+
+### Ao criar uma nova rota, seguir sempre:
+```
+Route → Middleware (se necessário) → Controller → Entidade/Service
+```
+
+---
+
+## 7. Variáveis de Ambiente (`.env`)
+
+| Variável | Descrição | Obrigatória |
+|----------|-----------|:-----------:|
+| `PORT` | Porta do servidor (padrão: 4050) | Não |
+| `NODE_ENV` | `development` ou `production` | Sim |
+| `DISPLAY_LOG_WEBHOOK` | `true` para logs detalhados | Não |
+| `PROFISSIONAIS_LOCALIZACOES_API_KEY` | API Key da rota de localizações | Sim |
+| `URL_AGENTE_N8N` | Webhook do n8n para IA | Sim |
+| `LOCATIONS_SOURCE_URL` | URL para polling de localizações | Sim |
+| `DB_TIMEZONE` | Fuso do MySQL (ex: `-03:00`) | Sim |
+| `PROFISSIONAIS_LOCALIZACOES_CONCURRENCY` | Limite de domínios paralelos no lote | Não |
+
+---
+
+## 8. Regras de Negócio Críticas
+
+### Geofencing — "Cheguei"
+- Profissional é marcado como "chegou" se distância até o ponto for `<= raioChegadaPonto`.
+- `raioChegadaPonto` vem do banco de dados do tenant (padrão: 300m).
+
+### Segurança de Corpo das Requisições
+- **TODOS** os POST devem ter body criptografado no formato:
+  ```json
+  { "iv": "...", "tag": "...", "data": "..." }
+  ```
+- O middleware `decryptBody` descriptografa antes de chegar no controller.
+- **NUNCA** desativar `decryptBody` em produção.
+
+### Fuso Horário
+- Sempre buscar o fuso do tenant com `buscarFusoHorarioPorDomain(domain)`.
+- Padrão: `America/Sao_Paulo`.
+- **NUNCA** usar `new Date()` diretamente sem aplicar o fuso do tenant.
+
+### Concorrência em Lote
+- Processamentos de múltiplos domínios devem usar `p-limit` com o valor de `PROFISSIONAIS_LOCALIZACOES_CONCURRENCY`.
+- Evita travar o Event Loop em lotes grandes.
+
+### Cooldown de Push
+- Notificações de chegada têm cooldown de 60s por padrão.
+- Verificar cooldown antes de disparar qualquer push de confirmação.
+
+---
+
+## 9. Convenções do Projeto
+
+### Adicionando novo cliente (tenant)
+1. Criar `configBanco/nome_do_bancobc.ini` com formato:
+   ```ini
+   [nome_do_banco]
+   host=...
+   user=...
+   password=...
+   database=...
+   ```
+2. Nunca commitar arquivos `.ini` reais no Git.
+
+### Adicionando nova funcionalidade
+1. Criar a rota em `routes/`
+2. Criar o middleware se necessário em `middleware/`
+3. Criar o controller em `controller/`
+4. Criar o service em `services/` se a lógica for pesada
+5. Usar `Entidade.create(domain)` para qualquer acesso ao banco
+
+---
+
+## 10. O que NÃO Fazer
+
+| ❌ Proibido | ✅ Correto |
+|------------|-----------|
+| `require()` / `module.exports` | `import` / `export` (ESM) |
+| SQL interpolado `"SELECT..." + var` | `Entidade` com Prepared Statements |
+| `console.log(...)` | `displayLog(...)` de `utils/displayLogWebhook.js` |
+| `new Date()` sem fuso do tenant | `buscarFusoHorarioPorDomain(domain)` |
+| Desativar `decryptBody` em produção | Manter sempre ativo |
+| Commitar `.ini` ou `.env` reais | Usar `.gitignore` para esses arquivos |
+| Conexão direta ao banco sem `Entidade.create()` | `Entidade.create(domain)` sempre |
+| Processar lote sem `p-limit` | Respeitar `PROFISSIONAIS_LOCALIZACOES_CONCURRENCY` |
