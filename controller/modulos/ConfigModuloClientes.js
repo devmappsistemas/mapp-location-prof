@@ -204,4 +204,122 @@ export class ConfigModuloClientes {
         return defaultFuso;
     }
 
+    /**
+     * JSON do módulo ORDEM_PONTOS (painel Finalização dos Pontos).
+     * Formato: { todos: { ativo: 'S'|'N' }, clientesConfig: { [idCliente]: { ativo: 'S'|'N' } } }
+     *
+     * @param {string} domain
+     * @returns {Promise<{ todos?: object, clientesConfig?: object }|null>}
+     */
+    static async buscarOrdemPontosConfigPorDomain(domain) {
+        try {
+            const pool = await getPoolForDomain(domain);
+            if (!pool) return null;
+            const entidade = new Entidade({ dbClient: pool, dbMD: null });
+            const row = await entidade.selectRetornaArrayUnico(
+                { id: "", arrayConfiguracoes: "" },
+                "modulos",
+                "sigla = :sigla",
+                { sigla: "ORDEM_PONTOS" }
+            );
+            if (!row?.id || !row.arrayConfiguracoes || String(row.arrayConfiguracoes).trim() === "") {
+                return null;
+            }
+            try {
+                const parsed = JSON.parse(row.arrayConfiguracoes);
+                return typeof parsed === "object" && parsed !== null ? parsed : null;
+            } catch {
+                return null;
+            }
+        } catch (error) {
+            displayError(`[buscarOrdemPontosConfigPorDomain] Erro para domínio ${domain}:`, error.message);
+            return null;
+        }
+    }
+
+    /**
+     * JSON do app prof (configAppProf2021) — mesmo módulo que AppProfissional::buscarConfigProf no painel.
+     * Usa arrayConfiguracoes (servicoExecucao, liberarPonto1 por tipo de veículo, etc.).
+     *
+     * @param {string} domain
+     * @returns {Promise<Object|null>}
+     */
+    static async buscarConfigAppProfJsonPorDomain(domain) {
+        try {
+            const pool = await getPoolForDomain(domain);
+            if (!pool) return null;
+            const entidade = new Entidade({ dbClient: pool, dbMD: null });
+            const row = await entidade.selectRetornaArrayUnico(
+                { id: "", arrayConfiguracoes: "" },
+                "modulos",
+                "descricaoModulo = :desc",
+                { desc: "configAppProf2021" }
+            );
+            if (!row?.id || !row.arrayConfiguracoes || String(row.arrayConfiguracoes).trim() === "") {
+                return null;
+            }
+            try {
+                const sanitized = String(row.arrayConfiguracoes).replace(/[\u0000-\u001F\u007F]/g, "");
+                const parsed = JSON.parse(sanitized);
+                return typeof parsed === "object" && parsed !== null ? parsed : null;
+            } catch {
+                return null;
+            }
+        } catch (error) {
+            displayError(`[buscarConfigAppProfJsonPorDomain] Erro para domínio ${domain}:`, error.message);
+            return null;
+        }
+    }
+
+    /**
+     * Liberar Ponto 1 (tela de endereços), por tipo de veículo — painel salva em
+     * servicoExecucao[tipoVeiculo].telaEnderecos.botoesTextos.liberarPonto1 (boolean).
+     * Ausente / tipo inexistente / false → não liberado (exige roteiro pelo próximo ponto mínimo).
+     *
+     * @param {Object|null} configAppProfParsed
+     * @param {string|number|null|undefined} mototaxi
+     * @returns {boolean} true = profissional pode iniciar em qualquer ponto
+     */
+    static liberarPonto1ParaTipoVeiculo(configAppProfParsed, mototaxi) {
+        const se = configAppProfParsed?.servicoExecucao;
+        if (!se || typeof se !== "object") return false;
+        if (mototaxi == null || String(mototaxi).trim() === "") return false;
+        const t = String(mototaxi).trim();
+        const candidatos = [t, t.toUpperCase(), t.toLowerCase()];
+        const vistos = new Set();
+        for (const k of candidatos) {
+            if (vistos.has(k)) continue;
+            vistos.add(k);
+            if (!Object.prototype.hasOwnProperty.call(se, k)) continue;
+            const btn = se[k]?.telaEnderecos?.botoesTextos;
+            if (btn && typeof btn.liberarPonto1 !== "undefined") {
+                return btn.liberarPonto1 === true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Espelha ControlerConfigCliente::buscaConfigOrdemPontos (motoboy4).
+     * Se existir clientesConfig[idSolicitante], usa só esse ativo; senão usa todos.ativo.
+     *
+     * @param {{ todos?: { ativo?: string }, clientesConfig?: Record<string|number, { ativo?: string }> }|null} configOrdemPontos
+     * @param {number|string|null|undefined} idSolicitante
+     * @returns {boolean}
+     */
+    static ordemPontosModuloHabilitadoParaSolicitante(configOrdemPontos, idSolicitante) {
+        if (!configOrdemPontos || typeof configOrdemPontos !== "object") return false;
+        const idNum = parseInt(idSolicitante, 10);
+        const hasValidId = Number.isFinite(idNum) && idNum > 0;
+        const cc = configOrdemPontos.clientesConfig;
+        if (hasValidId && cc && typeof cc === "object") {
+            const specific = cc[idNum] ?? cc[String(idNum)];
+            if (specific != null && typeof specific === "object") {
+                return String(specific.ativo || "").toUpperCase() === "S";
+            }
+        }
+        const todos = configOrdemPontos.todos;
+        return todos != null && String(todos.ativo || "").toUpperCase() === "S";
+    }
+
 }

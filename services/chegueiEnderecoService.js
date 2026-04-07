@@ -48,6 +48,16 @@ function isFinalizado(enderecoItem) {
   return hasValue(enderecoItem?.saida);
 }
 
+/** Menor `ponto` numérico entre endereços ainda sem chegada; null se nenhum válido. */
+function proximoPontoEsperado(enderecosSemChegada) {
+  let min = Infinity;
+  for (const item of enderecosSemChegada) {
+    const p = parseInt(item?.ponto, 10);
+    if (Number.isFinite(p)) min = Math.min(min, p);
+  }
+  return Number.isFinite(min) && min !== Infinity ? min : null;
+}
+
 /**
  * Verifica se o módulo cheguei está ativo para o domínio (gates 2, 3 e 4).
  * @param {string} domain
@@ -64,7 +74,7 @@ export async function moduloChegueiAtivoParaDomain(domain) {
  * Usar 1x por domínio e passar config para processarChegueiEndereco (evita N buscas por profissional).
  *
  * @param {string} domain
- * @returns {Promise<{ ativo: boolean, config?: { pool, msgConfigApp, moduloAppConfig, fusoHorario } }>}
+ * @returns {Promise<{ ativo: boolean, config?: { pool, msgConfigApp, moduloAppConfig, fusoHorario, ordemPontosConfig, configAppProfParsed } }>}
  */
 export async function buscarConfigChegueiCompletaPorDomain(domain) {
   try {
@@ -85,9 +95,20 @@ export async function buscarConfigChegueiCompletaPorDomain(domain) {
       displayError("[chegueiEndereco] Erro ao obter fuso horário:", err.message);
     }
 
+    let ordemPontosConfig = null;
+    let configAppProfParsed = null;
+    try {
+      [ordemPontosConfig, configAppProfParsed] = await Promise.all([
+        ConfigModuloClientes.buscarOrdemPontosConfigPorDomain(domain),
+        ConfigModuloClientes.buscarConfigAppProfJsonPorDomain(domain),
+      ]);
+    } catch (err) {
+      displayError("[chegueiEndereco] Erro ao obter ORDEM_PONTOS / configAppProf2021:", err.message);
+    }
+
     return {
       ativo: true,
-      config: { pool, msgConfigApp, moduloAppConfig, fusoHorario },
+      config: { pool, msgConfigApp, moduloAppConfig, fusoHorario, ordemPontosConfig, configAppProfParsed },
     };
   } catch (err) {
     displayError("[chegueiEndereco] buscarConfigChegueiCompletaPorDomain:", err.message);
@@ -103,7 +124,7 @@ export async function buscarConfigChegueiCompletaPorDomain(domain) {
  * @param {number|string} params.idProf
  * @param {number|string} params.la - latitude do profissional
  * @param {number|string} params.lo - longitude do profissional
- * @param {Object} [params.configPreCarregada] - Quando fornecido, evita buscas de config (pool, msgConfigApp, moduloAppConfig, fusoHorario). Usar quando processando vários profissionais do mesmo domínio.
+ * @param {Object} [params.configPreCarregada] - Quando fornecido, evita buscas de config (pool, msgConfigApp, moduloAppConfig, fusoHorario, ordemPontosConfig, configAppProfParsed). Usar quando processando vários profissionais do mesmo domínio.
  * @returns {Promise<ChegueiResult>}
  */
 export async function processarChegueiEndereco({ domain, idProf, la, lo, configPreCarregada }) {
@@ -118,10 +139,12 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
     };
   }
 
-  let pool, msgConfigApp, moduloAppConfig, fusoHorario;
+  let pool, msgConfigApp, moduloAppConfig, fusoHorario, ordemPontosConfig = null, configAppProfParsed = null;
 
   if (configPreCarregada) {
     ({ pool, msgConfigApp, moduloAppConfig, fusoHorario } = configPreCarregada);
+    ordemPontosConfig = configPreCarregada.ordemPontosConfig ?? null;
+    configAppProfParsed = configPreCarregada.configAppProfParsed ?? null;
   } else {
     // ---- Obter pool e configs -----------------------------------------------
     try {
@@ -181,6 +204,15 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
       });
       return { status: 200, body: { success: false, message: "Configuração não permite registro de cheguei" } };
     }
+
+    try {
+      [ordemPontosConfig, configAppProfParsed] = await Promise.all([
+        ConfigModuloClientes.buscarOrdemPontosConfigPorDomain(domain),
+        ConfigModuloClientes.buscarConfigAppProfJsonPorDomain(domain),
+      ]);
+    } catch (err) {
+      displayError("[chegueiEndereco] Erro ao obter ORDEM_PONTOS / configAppProf2021:", err.message);
+    }
   }
 
   const logController = new ControleLogRg({ dbClient: pool, dbMD: null });
@@ -218,7 +250,7 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
   let servicos = [];
   try {
     servicos = await entidade.select(
-      { id: "", retorno: "" },
+      { id: "", retorno: "", idSolicitante: "", mototaxi: "" },
       "servico",
       "idMotoboy = :idMotoboy AND status = :status",
       { idMotoboy: idProf, status: "A" }
@@ -238,6 +270,37 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
     return { status: 500, body: { error: "Erro interno", message: err.message } };
   }
 
+  const idsServicoComModuloOrdemAtivo = servicos
+    .filter(
+      (s) =>
+        s?.id != null &&
+        String(s.id).trim() !== "" &&
+        ConfigModuloClientes.ordemPontosModuloHabilitadoParaSolicitante(ordemPontosConfig, s.idSolicitante)
+    )
+    .map((s) => s.id);
+  const mapServicoOrdemPontosMarcado = new Map();
+  if (idsServicoComModuloOrdemAtivo.length > 0) {
+    try {
+      const paramsLog = { identOrdem: "ORDEM_PONTOS", txtOrdem: "S" };
+      const placeholdersIn = idsServicoComModuloOrdemAtivo.map((_, i) => `:sid${i}`).join(", ");
+      idsServicoComModuloOrdemAtivo.forEach((id, i) => {
+        paramsLog[`sid${i}`] = id;
+      });
+      const rowsLog = await entidade.select(
+        { idServico: "" },
+        "servico_log",
+        `identificador = :identOrdem AND texto = :txtOrdem AND idServico IN (${placeholdersIn})`,
+        paramsLog
+      );
+      const listaLog = Array.isArray(rowsLog) ? rowsLog : [];
+      for (const row of listaLog) {
+        if (row?.idServico != null) mapServicoOrdemPontosMarcado.set(String(row.idServico), true);
+      }
+    } catch (err) {
+      displayError("[chegueiEndereco] Erro ao listar servico_log ORDEM_PONTOS:", err.message);
+    }
+  }
+
   const processados = [];
   /** Quando confirmarProfissional === 'S', acumula endereços dentro do raio para notificar uma única vez. */
   const pendentesPush = [];
@@ -250,8 +313,28 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
     const idServico = servico?.id;
     if (!idServico) continue;
     const servicoTemRetorno = String(servico?.retorno || "").toUpperCase() === "S";
+    const idSolicitante = servico?.idSolicitante;
+    const mototaxi = servico?.mototaxi;
+    const moduloOrdemPontosAtivo = ConfigModuloClientes.ordemPontosModuloHabilitadoParaSolicitante(
+      ordemPontosConfig,
+      idSolicitante
+    );
+    const clienteMarcouSeguirOrdem = mapServicoOrdemPontosMarcado.has(String(idServico));
+    const aplicarSequenciaOrdemPontos = moduloOrdemPontosAtivo && clienteMarcouSeguirOrdem;
+    const liberarPonto1Ativo = ConfigModuloClientes.liberarPonto1ParaTipoVeiculo(configAppProfParsed, mototaxi);
+    const aplicarRestricaoProximoPonto =
+      aplicarSequenciaOrdemPontos || (!aplicarSequenciaOrdemPontos && !liberarPonto1Ativo);
 
-    displayLog("info", "[chegueiEndereco] idServico", idServico);
+    displayLog("info", "[chegueiEndereco] [CONFIGURACAO]", {
+      idServico,
+      idSolicitante,
+      mototaxi,
+      moduloOrdemPontosAtivo,
+      clienteMarcouSeguirOrdem,
+      aplicarSequenciaOrdemPontos,
+      liberarPonto1Ativo,
+      aplicarRestricaoProximoPonto,
+    });
     // Lista todos os endereços do serviço para avaliar retorno/finalização e filtra os sem chegada.
     let enderecosServico = [];
     try {
@@ -337,6 +420,38 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
             pendentes: outrosNaoFinalizados.map((item) => item.idEndereco),
           });
           continue;
+        }
+      }
+
+      if (aplicarRestricaoProximoPonto) {
+        const esperado = proximoPontoEsperado(enderecosSemChegada);
+        if (esperado != null) {
+          if (!Number.isFinite(pontoAtual) || pontoAtual !== esperado) {
+            const acaoSeq = aplicarSequenciaOrdemPontos ? "ordem_pontos_bloqueado" : "liberar_ponto1_bloqueado";
+            const msgSeq = aplicarSequenciaOrdemPontos
+              ? "Cheguei automático fora da ordem: aguarde o próximo ponto da sequência."
+              : "Cheguei automático fora da ordem: siga o roteiro a partir do próximo ponto da rota.";
+            displayLog("info", "[chegueiEndereco] sequencia pontos bloqueada", {
+              domain,
+              idProf,
+              idServico,
+              idEndereco,
+              acao: acaoSeq,
+              aplicarSequenciaOrdemPontos,
+              liberarPonto1Ativo,
+              proximoPontoEsperado: esperado,
+              pontoAtual: Number.isFinite(pontoAtual) ? pontoAtual : null,
+            });
+            processados.push({
+              idServico,
+              idEndereco,
+              acao: acaoSeq,
+              message: msgSeq,
+              proximoPontoEsperado: esperado,
+              pontoAtual: Number.isFinite(pontoAtual) ? pontoAtual : null,
+            });
+            continue;
+          }
         }
       }
 
