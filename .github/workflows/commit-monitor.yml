@@ -173,7 +173,7 @@ jobs:
           GLOBALS_JSON=$(echo "$GLOBALS_LIST" | python3 -c "import sys; names = [n.strip() for n in sys.stdin.read().split(',') if n.strip()]; print(','.join([f'\"{n}\":\"readonly\"' for n in names]))")
 
           # Gera config ESLint em uma linha (evita conflito de { } com shell e YAML)
-          echo '{"env":{"node":true,"browser":true,"es2022":true,"commonjs":true},"parserOptions":{"ecmaVersion":2022,"sourceType":"SOURCETYPE_PLACEHOLDER"},"globals":{GLOBALS_PLACEHOLDER},"rules":{"no-undef":"error","no-unused-vars":"warn","no-redeclare":"error","no-unreachable":"error","no-duplicate-case":"error","no-constant-condition":"error","no-eval":"error","no-implied-eval":"error","no-new-func":"error","eqeqeq":["error","always"],"no-var":"error","prefer-const":"warn","use-isnan":"error","no-empty":"warn","semi":["warn","always"]},"ignorePatterns":["node_modules/","dist/","build/","vendor/"]}' \
+          echo '{"env":{"node":true,"browser":true,"es2022":true,"commonjs":true},"parserOptions":{"ecmaVersion":2022,"sourceType":"SOURCETYPE_PLACEHOLDER"},"globals":{GLOBALS_PLACEHOLDER},"rules":{"no-undef":"error","no-unused-vars":"warn","no-redeclare":"error","no-unreachable":"error","no-duplicate-case":"error","no-constant-condition":"error","no-eval":"error","no-implied-eval":"error","no-new-func":"error","eqeqeq":["warn","always"],"no-var":"error","prefer-const":"warn","use-isnan":"error","no-empty":"warn","semi":["warn","always"]},"ignorePatterns":["node_modules/","dist/","build/","vendor/"]}' \
             | sed "s/SOURCETYPE_PLACEHOLDER/$SOURCETYPE/g" | sed "s|GLOBALS_PLACEHOLDER|$GLOBALS_JSON|g" > /tmp/eslintrc-ci.json
 
           echo "📋 Analisando JavaScript/TypeScript" >> $GITHUB_STEP_SUMMARY

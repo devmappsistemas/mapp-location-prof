@@ -98,12 +98,12 @@ export class ConfigModuloClientes {
                     dbMD: null
                 };
                 
-                let entidade = new Entidade(db);
+                const entidade = new Entidade(db);
 
-                let resultado = await entidade.selectRetornaArrayUnico(dados, 'mensagem', condicao, dadosCondicao);
+                const resultado = await entidade.selectRetornaArrayUnico(dados, 'mensagem', condicao, dadosCondicao);
 
                 if (resultado?.id > 0 && resultado?.texto !== '') {
-                    let configModulo = JSON.parse(resultado.texto);
+                    const configModulo = JSON.parse(resultado.texto);
 
                     if (configModulo?.ativo === 'S') {
                         resultados.set(domain, {

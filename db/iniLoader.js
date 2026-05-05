@@ -247,6 +247,7 @@ export async function loadDbConfigFromIni(domain) {
 export async function loadDbConfigFromMDIni() {
 
     const filename = "mdClmappbc.ini";
+    const section = "mdClmapp";
     const iniPath = path.join(__dirname, "..", "configBanco", filename);
 
     if (!fs.existsSync(iniPath)) {
@@ -263,13 +264,13 @@ export async function loadDbConfigFromMDIni() {
         throw err;
     }
 
-    if (!parsed['mdClmapp']) {
-        const error = new Error(`Seção '[mdClmapp]' não existe no arquivo '${filename}'.`);
+    if (!parsed[section]) {
+        const error = new Error(`Seção '[${section}]' não existe no arquivo '${filename}'.`);
         error.code = 'CONFIG_SECTION_NOT_FOUND';
         throw error;
     }
 
-    const cfg = parsed['mdClmapp'];
+    const cfg = parsed[section];
 
     // Valida campos obrigatórios
     const requiredFields = ['local', 'usuario', 'senha', 'banco'];
