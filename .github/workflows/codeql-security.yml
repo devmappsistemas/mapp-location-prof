@@ -1,0 +1,146 @@
+name: 🔬 Análise de Segurança Avançada (CodeQL)
+
+on:
+  push:
+    branches: [main, master, develop]
+  pull_request:
+    branches: [main, master, develop]
+  schedule:
+    - cron: '0 2 * * 3'  # Toda quarta-feira às 02h UTC
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  detect-languages:
+    name: 🔍 Detectar Linguagens
+    runs-on: ubuntu-latest
+    outputs:
+      languages: ${{ steps.detect.outputs.languages }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detectar Linguagens Suportadas
+        id: detect
+        run: |
+          LANGS=()
+          [ -f "package.json" ] && LANGS+=("javascript")
+          [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] && LANGS+=("python")
+          find . -name "*.java" -maxdepth 5 | grep -q . && LANGS+=("java")
+          [ -f "go.mod" ] && LANGS+=("go")
+          find . -name "*.cs" -maxdepth 5 | grep -q . && LANGS+=("csharp")
+          find . -name "*.cpp" -o -name "*.c" | head -1 | grep -q . && LANGS+=("cpp")
+
+          if [ ${#LANGS[@]} -eq 0 ]; then
+            LANGS=("javascript")
+          fi
+
+          # Kotlin usa o analisador Java no CodeQL
+          find . -name "*.kt" -not -path "*/.github/*" -not -path "*/build/*" | grep -q . && \
+            [[ ! " ${LANGS[*]} " =~ " java " ]] && LANGS+=("java")
+
+          LANGS_JSON=$(printf '%s\n' "${LANGS[@]}" | jq -R . | jq -s -c .)
+          echo "languages=$LANGS_JSON" >> $GITHUB_OUTPUT
+          echo "Linguagens detectadas: ${LANGS[*]}"
+
+  codeql-analysis:
+    name: 🔬 CodeQL — ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    needs: detect-languages
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJson(needs.detect-languages.outputs.languages) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verificar se há código fonte
+        id: check-source
+        run: |
+          LANG="${{ matrix.language }}"
+          HAS_CODE="false"
+          if [ "$LANG" = "javascript" ]; then
+            find . -not -path "./.github/*" -not -path "./node_modules/*" \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) | grep -q . && HAS_CODE="true"
+          elif [ "$LANG" = "python" ]; then
+            find . -not -path "./.github/*" -name "*.py" | grep -q . && HAS_CODE="true"
+          elif [ "$LANG" = "go" ]; then
+            find . -name "*.go" | grep -q . && HAS_CODE="true"
+          elif [ "$LANG" = "java" ]; then
+            find . -name "*.java" | grep -q . && HAS_CODE="true"
+            find . -name "*.kt" -not -path "*/build/*" | grep -q . && HAS_CODE="true"
+          fi
+          echo "has_code=$HAS_CODE" >> $GITHUB_OUTPUT
+          echo "Linguagem: $LANG | Código encontrado: $HAS_CODE"
+
+      - name: Inicializar CodeQL
+        if: steps.check-source.outputs.has_code == 'true'
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-and-quality
+
+      - name: Build Automático
+        if: steps.check-source.outputs.has_code == 'true'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Executar Análise CodeQL
+        if: steps.check-source.outputs.has_code == 'true'
+        continue-on-error: true
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      - name: Resumo da Análise
+        run: |
+          if [ "${{ steps.check-source.outputs.has_code }}" = "true" ]; then
+            echo "### 🔬 CodeQL — ${{ matrix.language }}" >> $GITHUB_STEP_SUMMARY
+            echo "✅ Análise concluída. Verifique **Security → Code scanning alerts**." >> $GITHUB_STEP_SUMMARY
+            echo "**Queries executadas:** security-and-quality" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 🔬 CodeQL — ${{ matrix.language }}" >> $GITHUB_STEP_SUMMARY
+            echo "⏭️ Ignorado — nenhum arquivo .${{ matrix.language }} encontrado ainda." >> $GITHUB_STEP_SUMMARY
+            echo "Quando o código da API for adicionado, a análise rodará automaticamente." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  dependency-review:
+    name: 📦 Revisão de Dependências
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v3
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: always
+
+  sbom-generation:
+    name: 📋 Gerar SBOM (Software Bill of Materials)
+    runs-on: ubuntu-latest
+    needs: codeql-analysis
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Gerar SBOM com Syft
+        uses: anchore/sbom-action@v0
+        with:
+          format: 'spdx-json'
+          output-file: 'sbom.spdx.json'
+          artifact-name: 'sbom-${{ github.sha }}.spdx.json'
+
+      - name: Resumo SBOM
+        run: |
+          echo "### 📋 SBOM Gerado" >> $GITHUB_STEP_SUMMARY
+          echo "O Software Bill of Materials foi gerado e está disponível como artefato." >> $GITHUB_STEP_SUMMARY
+          echo "Formato: **SPDX JSON**" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,60 @@
+# Configuração do Gitleaks para detecção de segredos
+# Documentação: https://github.com/gitleaks/gitleaks
+
+title = "Gitleaks — Configuração de Monitoramento"
+
+[extend]
+  # Usar regras base do Gitleaks
+  useDefault = true
+
+# ──────────────────────────────────────────────────────────────
+# REGRAS CUSTOMIZADAS
+# ──────────────────────────────────────────────────────────────
+
+[[rules]]
+  id = "custom-api-key"
+  description = "Possível API Key customizada"
+  regex = '''(?i)(api[_-]?key|apikey)\s*[=:]\s*["']?([a-z0-9]{20,})["']?'''
+  tags = ["api", "key", "generic"]
+
+[[rules]]
+  id = "custom-secret-variable"
+  description = "Variável com nome 'secret'"
+  regex = '''(?i)(secret|senha|password|passwd|pwd)\s*[=:]\s*["']([^"']{8,})["']'''
+  tags = ["secret", "password"]
+
+[[rules]]
+  id = "jwt-token"
+  description = "Token JWT"
+  regex = '''eyJ[a-zA-Z0-9]{10,}\.eyJ[a-zA-Z0-9]{10,}\.[a-zA-Z0-9_-]{10,}'''
+  tags = ["jwt", "token"]
+
+[[rules]]
+  id = "database-connection-string"
+  description = "String de conexão com banco de dados"
+  regex = '''(?i)(mongodb|postgresql|mysql|redis):\/\/[^:]+:[^@]+@'''
+  tags = ["database", "connection"]
+
+# ──────────────────────────────────────────────────────────────
+# EXCLUSÕES (allowlist)
+# ──────────────────────────────────────────────────────────────
+
+[allowlist]
+  description = "Exclusões globais"
+  paths = [
+    '''^\.git/''',
+    '''vendor/''',
+    '''node_modules/''',
+    '''\.lock$''',
+    '''package-lock\.json''',
+    '''yarn\.lock''',
+    '''go\.sum''',
+  ]
+  regexes = [
+    # Ignorar exemplos e documentação
+    '''(?i)example|sample|test|fake|dummy|placeholder|todo''',
+    # Ignorar valores de template
+    '''<[A-Z_]+>''',
+    '''\$\{[A-Z_]+\}''',
+    '''YOUR_[A-Z_]+''',
+  ]

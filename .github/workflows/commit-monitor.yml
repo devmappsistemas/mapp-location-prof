@@ -1,0 +1,1198 @@
+name: 🔍 Monitoramento de Commits
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # ─────────────────────────────────────────────
+  # JOB 1: Identificar autor e coletar metadados
+  # ─────────────────────────────────────────────
+  commit-metadata:
+    name: 📋 Coletar Metadados do Commit
+    runs-on: ubuntu-latest
+    outputs:
+      author_name:    ${{ steps.meta.outputs.author_name }}
+      author_email:   ${{ steps.meta.outputs.author_email }}
+      commit_sha:     ${{ steps.meta.outputs.commit_sha }}
+      commit_message: ${{ steps.meta.outputs.commit_message }}
+      branch:         ${{ steps.meta.outputs.branch }}
+      files_changed:  ${{ steps.meta.outputs.files_changed }}
+      timestamp:      ${{ steps.meta.outputs.timestamp }}
+
+    steps:
+      - name: Checkout do Repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Extrair Metadados
+        id: meta
+        run: |
+          AUTHOR_NAME=$(git log -1 --format="%an")
+          AUTHOR_EMAIL=$(git log -1 --format="%ae")
+          COMMIT_SHA=$(git rev-parse HEAD)
+          COMMIT_MSG=$(git log -1 --format="%s")
+          BRANCH=${GITHUB_REF#refs/heads/}
+          FILES_CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | wc -l || echo "1")
+          TIMESTAMP=$(git log -1 --format="%ci")
+
+          echo "author_name=$AUTHOR_NAME"     >> $GITHUB_OUTPUT
+          echo "author_email=$AUTHOR_EMAIL"   >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA"       >> $GITHUB_OUTPUT
+          echo "commit_message=$COMMIT_MSG"   >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH"               >> $GITHUB_OUTPUT
+          echo "files_changed=$FILES_CHANGED" >> $GITHUB_OUTPUT
+          echo "timestamp=$TIMESTAMP"         >> $GITHUB_OUTPUT
+
+          echo "### 📋 Metadados do Commit" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo          | Valor                    |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------------|--------------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Autor**      | $AUTHOR_NAME             |" >> $GITHUB_STEP_SUMMARY
+          echo "| **E-mail**     | $AUTHOR_EMAIL            |" >> $GITHUB_STEP_SUMMARY
+          echo "| **SHA**        | \`${COMMIT_SHA:0:8}\`    |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch**     | $BRANCH                  |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mensagem**   | $COMMIT_MSG              |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Arquivos**   | $FILES_CHANGED alterados |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Timestamp**  | $TIMESTAMP               |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Listar Arquivos Alterados
+        run: |
+          echo "### 📂 Arquivos Alterados" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          git diff --stat HEAD~1 HEAD 2>/dev/null || git show --stat HEAD
+          git diff --stat HEAD~1 HEAD 2>/dev/null >> $GITHUB_STEP_SUMMARY || \
+            git show --stat HEAD >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # JOB 2: Análise de Qualidade de Código
+  # Suporte: JavaScript, TypeScript, HTML, CSS,
+  #          PHP, Python, Go — simultâneos
+  # ─────────────────────────────────────────────
+  code-quality:
+    name: 🧹 Análise de Qualidade de Código
+    runs-on: ubuntu-latest
+    needs: commit-metadata
+    outputs:
+      quality_status: ${{ steps.final-status.outputs.quality_status }}
+      issues_summary: ${{ steps.final-status.outputs.issues_summary }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detectar Linguagens do Projeto
+        id: detect-lang
+        run: |
+          HAS_JS=false;  HAS_PHP=false;   HAS_PY=false
+          HAS_GO=false;  HAS_HTML=false;  HAS_CSS=false
+          HAS_KT=false;  HAS_SWIFT=false
+          [ -f "package.json" ] && HAS_JS=true
+          find . -not -path "*/node_modules/*" -not -path "*/.github/*" -not -path "*/vendor/*" \
+            -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" 2>/dev/null | grep -q . && HAS_JS=true
+          find . -not -path "*/node_modules/*" -not -path "*/.github/*" -not -path "*/vendor/*" \
+            -name "*.php" -maxdepth 5 2>/dev/null | grep -q . && HAS_PHP=true
+          find . -not -path "*/node_modules/*" -not -path "*/.github/*" \
+            -name "*.html" -o -name "*.htm" 2>/dev/null | grep -q . && HAS_HTML=true
+          find . -not -path "*/node_modules/*" -not -path "*/.github/*" \
+            -name "*.css" -o -name "*.scss" -o -name "*.sass" 2>/dev/null | grep -q . && HAS_CSS=true
+          { [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; } && HAS_PY=true
+          [ -f "go.mod" ] && HAS_GO=true
+          find . -not -path "*/.github/*" -not -path "*/build/*" \
+            -name "*.kt" -o -name "*.kts" 2>/dev/null | grep -q . && HAS_KT=true
+          find . -not -path "*/.github/*" -not -path "*/build/*" \
+            -name "*.swift" 2>/dev/null | grep -q . && HAS_SWIFT=true
+          echo "has_js=$HAS_JS"       >> $GITHUB_OUTPUT
+          echo "has_php=$HAS_PHP"     >> $GITHUB_OUTPUT
+          echo "has_html=$HAS_HTML"   >> $GITHUB_OUTPUT
+          echo "has_css=$HAS_CSS"     >> $GITHUB_OUTPUT
+          echo "has_py=$HAS_PY"       >> $GITHUB_OUTPUT
+          echo "has_go=$HAS_GO"       >> $GITHUB_OUTPUT
+          echo "has_kt=$HAS_KT"       >> $GITHUB_OUTPUT
+          echo "has_swift=$HAS_SWIFT" >> $GITHUB_OUTPUT
+          echo "### 🔎 Linguagens detectadas" >> $GITHUB_STEP_SUMMARY
+          echo "| Linguagem | Presente |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|----------|" >> $GITHUB_STEP_SUMMARY
+          echo "| JavaScript / TypeScript | $HAS_JS |"   >> $GITHUB_STEP_SUMMARY
+          echo "| HTML | $HAS_HTML |"                    >> $GITHUB_STEP_SUMMARY
+          echo "| CSS / SCSS | $HAS_CSS |"               >> $GITHUB_STEP_SUMMARY
+          echo "| PHP | $HAS_PHP |"                      >> $GITHUB_STEP_SUMMARY
+          echo "| Python | $HAS_PY |"                    >> $GITHUB_STEP_SUMMARY
+          echo "| Go | $HAS_GO |"                        >> $GITHUB_STEP_SUMMARY
+          echo "| Kotlin (Android) | $HAS_KT |"          >> $GITHUB_STEP_SUMMARY
+          echo "| Swift (iOS) | $HAS_SWIFT |"            >> $GITHUB_STEP_SUMMARY
+
+      # ── JavaScript / TypeScript / HTML / CSS ──
+      # Regras embutidas — não precisa de arquivo de config no projeto
+      - name: Setup Node.js
+        if: steps.detect-lang.outputs.has_js == 'true' || steps.detect-lang.outputs.has_html == 'true' || steps.detect-lang.outputs.has_css == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar ferramentas JS/HTML/CSS
+        if: steps.detect-lang.outputs.has_js == 'true' || steps.detect-lang.outputs.has_html == 'true' || steps.detect-lang.outputs.has_css == 'true'
+        run: |
+          npm install -g htmlhint stylelint stylelint-config-standard eslint 2>/dev/null || true
+          [ -f "package.json" ] && (npm ci --prefer-offline 2>/dev/null || npm install) || true
+
+      - name: ESLint — JavaScript / TypeScript (regras embutidas)
+        if: steps.detect-lang.outputs.has_js == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🔍 ESLint — JavaScript / TypeScript" >> $GITHUB_STEP_SUMMARY
+
+          # Instala ESLint v8 (suporta --no-eslintrc e .eslintrc.json)
+          npm install -g eslint@8 2>/dev/null || true
+
+          # Gera config embutida via jq (sem heredoc nem python multiline)
+          # Detecta automaticamente se o projeto usa ES Modules (import/export) ou CommonJS (require)
+          SOURCETYPE="commonjs"
+          if [ -f "package.json" ]; then
+            PKG_TYPE=$(node -e "try{const p=require('./package.json');console.log(p.type||'')}catch(e){}" 2>/dev/null || echo "")
+            [ "$PKG_TYPE" = "module" ] && SOURCETYPE="module"
+          fi
+          echo "sourceType detectado: $SOURCETYPE" >> $GITHUB_STEP_SUMMARY
+
+                    # Detecta globals do projeto (window.X, const X global) e gera lista para ESLint
+          GLOBALS_LIST=$(grep -rh --include="*.js" -oP "(?<=window\.)[a-zA-Z_][a-zA-Z0-9_]*(?=\s*=)" . \
+            --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist 2>/dev/null | sort -u | head -50 | tr '\n' ',')
+
+          # Gera JSON dos globals via Python (sem depender de jq, evita problemas com {)
+          GLOBALS_JSON=$(echo "$GLOBALS_LIST" | python3 -c "import sys; names = [n.strip() for n in sys.stdin.read().split(',') if n.strip()]; print(','.join([f'\"{n}\":\"readonly\"' for n in names]))")
+
+          # Gera config ESLint em uma linha (evita conflito de { } com shell e YAML)
+          echo '{"env":{"node":true,"browser":true,"es2022":true,"commonjs":true},"parserOptions":{"ecmaVersion":2022,"sourceType":"SOURCETYPE_PLACEHOLDER"},"globals":{GLOBALS_PLACEHOLDER},"rules":{"no-undef":"error","no-unused-vars":"warn","no-redeclare":"error","no-unreachable":"error","no-duplicate-case":"error","no-constant-condition":"error","no-eval":"error","no-implied-eval":"error","no-new-func":"error","eqeqeq":["error","always"],"no-var":"error","prefer-const":"warn","use-isnan":"error","no-empty":"warn","semi":["warn","always"]},"ignorePatterns":["node_modules/","dist/","build/","vendor/"]}' \
+            | sed "s/SOURCETYPE_PLACEHOLDER/$SOURCETYPE/g" | sed "s|GLOBALS_PLACEHOLDER|$GLOBALS_JSON|g" > /tmp/eslintrc-ci.json
+
+          echo "📋 Analisando JavaScript/TypeScript" >> $GITHUB_STEP_SUMMARY
+
+          # Roda ESLint arquivo por arquivo via xargs — robusto para muitos arquivos
+          ESLINT_OUT=$(find . \
+            -not -path "*/node_modules/*" -not -path "*/dist/*" \
+            -not -path "*/build/*" -not -path "*/vendor/*" \
+            -not -path "*/.github/*" \
+            \( -name "*.js" -o -name "*.ts" -o -name "*.jsx" -o -name "*.tsx" \) \
+            -not -name "*.min.js" -maxdepth 6 \
+            -print0 | xargs -0 -r eslint \
+              --format=compact \
+              --no-eslintrc -c /tmp/eslintrc-ci.json \
+              2>&1) || true
+
+          # Filtra apenas linhas de erro/warning
+          ESLINT_ERRS=$(echo "$ESLINT_OUT" | grep -v "^$" | grep -v "problem" | grep -v "Oops" | grep -E " Error - | Warning - ")
+
+          # Salva erros em arquivo para uso na notificação Discord
+          echo "$ESLINT_ERRS" | head -10 | while IFS= read -r rawline; do
+            FILE_PATH=$(echo "$rawline" | sed -E 's/^([^:]+):.*$/\1/')
+            FILE_NAME=$(echo "$FILE_PATH" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\.\?/||")
+            LINE_NUM=$(echo "$rawline" | sed -E 's/.*line ([0-9]+).*/\1/')
+            TYPE=$(echo "$rawline" | grep -oE " (Error|Warning) - " | tr -d ' -')
+            MSG_FULL=$(echo "$rawline" | sed -E 's/.* (Error|Warning) - (.*)/\2/')
+            RULE=$(echo "$MSG_FULL" | grep -oE "\([a-z][a-z0-9-]*\)$" | tr -d '()')
+            MSG=$(echo "$MSG_FULL" | sed -E 's/ \([a-z][a-z0-9-]*\)$//' | cut -c1-50 | tr -d '|')
+            ICON="⚠️"; [ "$TYPE" = "Error" ] && ICON="❌"
+            echo "ROW|$ICON|$FILE_NAME|$LINE_NUM|${RULE:--}|$MSG"
+          done > /tmp/eslint_errs.txt
+
+          ERRORS=$(echo "$ESLINT_ERRS" | grep -cE " Error - ") || true
+          [ -z "$ESLINT_ERRS" ] && ERRORS=0
+          WARNINGS=$(echo "$ESLINT_ERRS" | grep -cE " Warning - ") || true
+          [ -z "$ESLINT_ERRS" ] && WARNINGS=0
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$ERRORS" -gt 0 ] 2>/dev/null || [ "$WARNINGS" -gt 0 ] 2>/dev/null; then
+            if [ "$ERRORS" -gt 0 ] 2>/dev/null; then
+              echo "❌ **$ERRORS erro(s)** e **$WARNINGS aviso(s)** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_error=true" >> $GITHUB_ENV
+            else
+              echo "⚠️ **$WARNINGS aviso(s)** encontrado(s) — revisar recomendado" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_warning=true" >> $GITHUB_ENV
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Tipo | Arquivo | Linha | Regra | Problema |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|---------|-------|-------|----------|" >> $GITHUB_STEP_SUMMARY
+
+            # Parse cada linha do ESLint compact: arquivo: line N, col M, Type - Mensagem (regra)
+            echo "$ESLINT_ERRS" | head -50 | while IFS= read -r rawline; do
+              # Extrai campos via sed
+              FILE_PATH=$(echo "$rawline" | sed -E 's/^([^:]+):.*$/\1/')
+              FILE_NAME=$(echo "$FILE_PATH" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\./||")
+              LINE_NUM=$(echo "$rawline" | sed -E 's/.*line ([0-9]+).*/\1/')
+              TYPE=$(echo "$rawline" | grep -oE " (Error|Warning) - " | tr -d ' -')
+              # Pega tudo entre "Type - " e "(regra)"
+              MSG_FULL=$(echo "$rawline" | sed -E 's/.* (Error|Warning) - (.*)/\2/')
+              RULE=$(echo "$MSG_FULL" | grep -oE "\([a-z][a-z0-9-]*\)$" | tr -d '()')
+              [ -z "$RULE" ] && RULE="-"
+              MSG_RAW=$(echo "$MSG_FULL" | sed -E 's/ \([a-z][a-z0-9-]*\)$//')
+
+              # Usa mensagem original do ESLint (mais precisa — indica a variável exata)
+              MSG_PT=$(echo "$MSG_RAW" | cut -c1-60)
+
+              ICON="⚠️"
+              [ "$TYPE" = "Error" ] && ICON="❌"
+              MSG_SAFE=$(echo "$MSG_PT" | tr -d '|')
+              echo "| $ICON | \`$FILE_NAME\` | $LINE_NUM | \`$RULE\` | $MSG_SAFE |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "✅ JavaScript sem erros ou avisos" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: HTMLHint — HTML (regras embutidas)
+        if: steps.detect-lang.outputs.has_html == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🌐 HTMLHint — HTML" >> $GITHUB_STEP_SUMMARY
+          jq -n '{
+            "tagname-lowercase":true,
+            "attr-lowercase":true,
+            "attr-value-double-quotes":true,
+            "attr-no-duplication":true,
+            "tag-pair":true,
+            "spec-char-escape":true,
+            "id-unique":true,
+            "src-not-empty":false,
+            "alt-require":false,
+            "doctype-first":false,
+            "doctype-html5":false,
+            "attr-unsafe-chars":false,
+            "inline-style-disabled":false,
+            "inline-script-disabled":false,
+            "space-tab-mixed-disabled":false,
+            "attr-value-not-empty":false,
+            "href-abs-or-rel":false,
+            "title-require":false
+          }' > /tmp/htmlhintrc-ci.json
+          CONFIG_FLAG="--config /tmp/htmlhintrc-ci.json"
+          ls .htmlhintrc .htmlhint.js 2>/dev/null | grep -q . && CONFIG_FLAG=""
+          HTML_OUT=$(find . -not -path "*/node_modules/*" -not -path "*/.github/*" -not -path "*/vendor/*" \
+            \( -name "*.html" -o -name "*.htm" \) -maxdepth 5 | \
+            xargs htmlhint $CONFIG_FLAG --format unix 2>&1) || true
+
+          # Remove ANSI e processa saída do HTMLHint com --format unix para output limpo
+          HTML_CLEAN=$(printf '%s' "$HTML_OUT" | tr -d '\033' | sed 's/\[[0-9;]*[mGKHFsulABCDJKSTf]//g')
+
+          # HTMLHint --format unix produz: arquivo:linha:col: mensagem [error/regra]
+          # Conta linhas com o padrão [error/...] ou [warning/...]
+          HTML_ERRORS=$(echo "$HTML_CLEAN" | grep -cE "\[(error|warning)/[a-z-]+\]" || echo "0")
+          [ "$(echo "$HTML_CLEAN" | grep -cE '\[(error|warning)/[a-z-]+\]')" = "0" ] && HTML_ERRORS=0
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$HTML_ERRORS" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$HTML_ERRORS problema(s) de estrutura HTML**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Arquivo | Linha | Tag/Atributo | Problema | Regra |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|--------------|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "$HTML_CLEAN" | grep -E "\.html?:[0-9]+:[0-9]+:.*\[(error|warning)/[a-z-]+\]" | \
+            while IFS= read -r rawline; do
+              FILE_PATH=$(echo "$rawline" | sed -E 's/^(.*\.html?):[0-9]+:[0-9]+:.*$/\1/')
+              CURRENT_FILE=$(basename "$FILE_PATH")
+              LINE_NUM=$(echo "$rawline" | sed -E 's/^.*\.html?:([0-9]+):[0-9]+:.*$/\1/')
+              RULE=$(echo "$rawline" | sed -E 's/^.*\[(error|warning)\/([a-z-]+)\]$/\2/')
+
+              # Extrai a tag/atributo problemático do primeiro [ ... ] da mensagem
+              TAG=$(echo "$rawline" | grep -oE '\[ [^]]+ \]' | head -1 | sed 's/\[ //; s/ \]//')
+              [ -z "$TAG" ] && TAG="—"
+
+              # Traduz a mensagem para português baseado na regra detectada
+              case "$RULE" in
+                tag-pair)
+                  MSG_PT="Tag não foi fechada corretamente"
+                  ;;
+                tagname-lowercase)
+                  MSG_PT="Nome da tag deve estar em minúsculo"
+                  ;;
+                attr-lowercase)
+                  MSG_PT="Nome do atributo deve estar em minúsculo"
+                  ;;
+                attr-value-double-quotes)
+                  MSG_PT="Valor do atributo deve usar aspas duplas"
+                  ;;
+                attr-no-duplication)
+                  MSG_PT="Atributo duplicado na mesma tag"
+                  ;;
+                attr-value-not-empty)
+                  MSG_PT="Atributo não pode ter valor vazio"
+                  ;;
+                spec-char-escape)
+                  MSG_PT="Caractere especial precisa de escape (& < >)"
+                  ;;
+                id-unique)
+                  MSG_PT="ID duplicado — deve ser único na página"
+                  ;;
+                src-not-empty)
+                  MSG_PT="Atributo src não pode estar vazio"
+                  ;;
+                alt-require)
+                  MSG_PT="Imagem precisa do atributo alt"
+                  ;;
+                doctype-first)
+                  MSG_PT="DOCTYPE deve ser a primeira linha do arquivo"
+                  ;;
+                doctype-html5)
+                  MSG_PT="DOCTYPE deve ser <!DOCTYPE html> (HTML5)"
+                  ;;
+                title-require)
+                  MSG_PT="Página precisa de uma tag <title>"
+                  ;;
+                *)
+                  MSG_PT="Problema de estrutura HTML"
+                  ;;
+              esac
+
+              echo "| \`${CURRENT_FILE}\` | $LINE_NUM | \`$TAG\` | $MSG_PT | \`$RULE\` |" >> $GITHUB_STEP_SUMMARY
+              echo "ROW|${CURRENT_FILE}|$LINE_NUM|$TAG|$MSG_PT|$RULE" >> /tmp/html_issues.txt
+            done
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+          else
+            echo "✅ HTML sem erros estruturais" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Stylelint — CSS / SCSS (regras embutidas)
+        if: steps.detect-lang.outputs.has_css == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🎨 Stylelint — CSS / SCSS" >> $GITHUB_STEP_SUMMARY
+          # Grava config Stylelint embutida em arquivo temporário
+          # Regras opinionadas rebaixadas para warning (notação moderna vs legada)
+          # Regras opinionadas desativadas (null) — evita falsos erros em CSS legado
+          jq -n '{
+            "extends": ["stylelint-config-standard"],
+            "rules": {
+              "color-function-notation": null,
+              "alpha-value-notation": null,
+              "color-hex-length": null,
+              "declaration-block-single-line-max-declarations": null,
+              "keyframes-name-pattern": null,
+              "selector-class-pattern": null,
+              "custom-property-pattern": null,
+              "custom-property-empty-line-before": null,
+              "value-keyword-case": null,
+              "property-no-vendor-prefix": null,
+              "property-no-deprecated": null,
+              "length-zero-no-unit": null
+            }
+          }' > /tmp/stylelint-ci.json
+
+          # Sempre usa nossa config — ignora .stylelintrc do projeto para evitar conflitos
+          CSS_OUT=$(find . -not -path "*/node_modules/*" -not -path "*/.github/*" \
+            \( -name "*.css" -o -name "*.scss" -o -name "*.sass" \) -maxdepth 5 | \
+            xargs npx stylelint --config /tmp/stylelint-ci.json --no-error-on-unmatched-pattern 2>&1) || true
+
+          # Remove ANSI da saída do Stylelint
+          CSS_CLEAN=$(printf '%s' "$CSS_OUT" | tr -d '\033' | sed 's/\[[0-9;]*[mGKHFsulABCDJKSTf]//g')
+
+          # Conta erros reais (✖) e warnings (⚠) pelo símbolo na saída limpa
+          CSS_ERRORS=$(echo "$CSS_CLEAN" | grep -c "X " || echo "0")
+          CSS_WARNS=$(echo "$CSS_CLEAN"  | grep -c "warning" || echo "0")
+          # Fallback: se stylelint retornou "errors" na linha de sumário
+          SUMMARY_ERRORS=$(echo "$CSS_CLEAN" | grep -oE "[0-9]+ error" | grep -oE "[0-9]+" | head -1)
+          SUMMARY_WARNS=$(echo "$CSS_CLEAN"  | grep -oE "[0-9]+ warning" | grep -oE "[0-9]+" | head -1)
+          [ -n "$SUMMARY_ERRORS" ] && CSS_ERRORS=$SUMMARY_ERRORS
+          [ -n "$SUMMARY_WARNS"  ] && CSS_WARNS=$SUMMARY_WARNS
+
+          echo "$CSS_CLEAN" | tail -20 >> $GITHUB_STEP_SUMMARY
+          if [ "${CSS_ERRORS:-0}" -gt 0 ] 2>/dev/null; then
+            echo "❌ **$CSS_ERRORS erro(s) CSS** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_error=true" >> $GITHUB_ENV
+          elif [ "${CSS_WARNS:-0}" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$CSS_WARNS aviso(s) CSS** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+          else
+            echo "✅ CSS sem erros" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Link Checker (Linkinator) ────────────
+      - name: 🔗 Verificação de Links Quebrados
+        if: steps.detect-lang.outputs.has_html == 'true'
+        continue-on-error: true
+        run: |
+          echo "## 🔗 Verificação de Links" >> $GITHUB_STEP_SUMMARY
+          npm install -g linkinator 2>/dev/null || true
+
+          # Escaneia cada HTML individualmente para que o parent venha com path correto
+          # --skip "/" ignora links absolutos de servidor (/dashboard.html) que só funcionam com HTTP
+          # --skip "^http" ignora links externos (só verifica referências locais relativas)
+          LINK_OUT=$(find . -not -path "*/node_modules/*" -not -path "*/.github/*" \
+            \( -name "*.html" -o -name "*.htm" \) -maxdepth 5 | \
+            xargs linkinator \
+              --format json \
+              --skip "^mailto:" \
+              --skip "^tel:" \
+              --skip "^javascript:" \
+              --skip "^#" \
+              --skip "^/" \
+              --skip "^https?://" \
+              --timeout 5000 \
+              2>/dev/null) || true
+
+          # Grava parser Python via printf (sem indentacao extra de YAML)
+          printf '%s\n' \
+            'import json, sys, os, subprocess, glob' \
+            'try:' \
+            '    data = json.loads(sys.stdin.read())' \
+            'except Exception:' \
+            '    print("COUNT=0"); sys.exit(0)' \
+            'all_links = data.get("links", [])' \
+            'proj_files = set()' \
+            'for f in glob.glob("**/*", recursive=True):' \
+            '    if "node_modules" in f or ".github" in f: continue' \
+            '    proj_files.add(os.path.basename(f).lower())' \
+            'def false_positive(url):' \
+            '    if not url or url.startswith("http"): return True' \
+            '    return os.path.basename(url).lower() in proj_files' \
+            'broken = [l for l in all_links if l.get("state")=="BROKEN" and not false_positive(l.get("url",""))]' \
+            'print(f"COUNT={len(broken)}")' \
+            'for link in broken:' \
+            '    url = link.get("url","")' \
+            '    status = link.get("status","?")' \
+            '    parent = link.get("parent","")' \
+            '    parent_file = os.path.basename(parent) if parent else "-"' \
+            '    url_display = os.path.basename(url) if url else "-"' \
+            '    url_short = url_display if len(url_display)<=50 else url_display[:47]+"..."' \
+            '    line_num = "-"' \
+            '    if parent and os.path.isfile(parent):' \
+            '        r = subprocess.run(["grep","-n",url_display,parent],capture_output=True,text=True)' \
+            '        if r.stdout.strip(): line_num=r.stdout.strip().split("\n")[0].split(":")[0]' \
+            '    if status==404: msg="Arquivo nao encontrado no projeto"' \
+            '    elif status==403: msg="Acesso proibido"' \
+            '    elif status==500: msg="Erro interno do servidor"' \
+            '    elif status==0 or status is None: msg="Link inacessivel"' \
+            '    elif isinstance(status,int) and status>=400: msg=f"Erro HTTP {status}"' \
+            '    else: msg=f"Status: {status}"' \
+            '    url_safe=str(url_short).replace("|"," ")' \
+            '    print(f"ROW|{parent_file}|{line_num}|{url_safe}|{status}|{msg}")' \
+            > /tmp/parse_links.py
+
+          PARSED=$(printf '%s' "$LINK_OUT" | python3 /tmp/parse_links.py 2>/dev/null) || PARSED="COUNT=0"
+          BROKEN_COUNT=$(echo "$PARSED" | grep -oE "^COUNT=[0-9]+" | head -1 | cut -d= -f2)
+          BROKEN_COUNT=${BROKEN_COUNT:-0}
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$BROKEN_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$BROKEN_COUNT link(s) quebrado(s) encontrado(s)**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Arquivo | Linha | Link Quebrado | Status | Problema |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|---------------|--------|----------|" >> $GITHUB_STEP_SUMMARY
+            echo "$PARSED" | grep "^ROW|" | while IFS='|' read -r _ pfile linenum url status msg; do
+              echo "| \`$pfile\` | $linenum | \`$url\` | $status | $msg |" >> $GITHUB_STEP_SUMMARY
+            done
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+          else
+            echo "✅ Todos os links verificados estão funcionando" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── PHP ──────────────────────────────────
+      - name: Setup PHP
+        if: steps.detect-lang.outputs.has_php == 'true'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: phpcs, phpstan
+
+      - name: PHP_CodeSniffer — PHP (regras embutidas)
+        if: steps.detect-lang.outputs.has_php == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🐘 PHP_CodeSniffer — PHP" >> $GITHUB_STEP_SUMMARY
+
+          # Foca em erros de sintaxe PHP — usa Generic.PHP.Syntax que é sempre disponível
+          if [ -f "phpcs.xml" ] || [ -f ".phpcs.xml" ]; then
+            PHPCS_OUT=$(phpcs --extensions=php --ignore=vendor/,node_modules/ . 2>&1) || true
+          else
+            PHPCS_OUT=$(phpcs --standard=Generic --sniffs=Generic.PHP.Syntax --extensions=php --ignore=vendor/,node_modules/ . 2>&1) || true
+          fi
+
+          # Monta tabela com erros encontrados
+          # Formato phpcs: linha | SEVERITY | mensagem
+          PHPCS_ERRORS=$(echo "$PHPCS_OUT" | grep -cE "^ +[0-9]+ \| ERROR" || echo "0")
+          PHPCS_WARNS=$(echo "$PHPCS_OUT" | grep -cE "^ +[0-9]+ \| WARNING" || echo "0")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$PHPCS_ERRORS" -gt 0 ] 2>/dev/null || [ "$PHPCS_WARNS" -gt 0 ] 2>/dev/null; then
+            if [ "$PHPCS_ERRORS" -gt 0 ] 2>/dev/null; then
+              echo "❌ **$PHPCS_ERRORS erro(s) de sintaxe PHP**" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_error=true" >> $GITHUB_ENV
+            else
+              echo "⚠️ **$PHPCS_WARNS aviso(s) PHP**" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_warning=true" >> $GITHUB_ENV
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Tipo | Arquivo | Linha | Regra | Problema |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|---------|-------|-------|----------|" >> $GITHUB_STEP_SUMMARY
+            CURRENT_FILE=""
+            while IFS= read -r line; do
+              # Detecta linha de arquivo: FILE: /path/to/file.php
+              if echo "$line" | grep -qE "^FILE: "; then
+                CURRENT_FILE=$(echo "$line" | sed "s|FILE: ||" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\./||")
+              # Detecta linha de erro: "   3 | ERROR | mensagem"
+              elif echo "$line" | grep -qE "^ +[0-9]+ \| (ERROR|WARNING)"; then
+                LINE_NUM=$(echo "$line" | grep -oE "^ +[0-9]+" | tr -d ' ')
+                TYPE=$(echo "$line" | grep -oE "ERROR|WARNING" | head -1)
+                MSG=$(echo "$line" | sed -E 's/^ +[0-9]+ \| (ERROR|WARNING) \| //' | cut -c1-60 | tr -d '|')
+                ICON="⚠️"; [ "$TYPE" = "ERROR" ] && ICON="❌"
+                echo "| $ICON | \`${CURRENT_FILE:-?}\` | $LINE_NUM | \`php-syntax\` | $MSG |" >> $GITHUB_STEP_SUMMARY
+              fi
+            done <<< "$PHPCS_OUT"
+          else
+            echo "✅ PHP sem erros de sintaxe" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: PHPStan — Análise Estática PHP (regras embutidas)
+        if: steps.detect-lang.outputs.has_php == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🔬 PHPStan — PHP" >> $GITHUB_STEP_SUMMARY
+          find . -name "*.php" -not -path "*/vendor/*" -not -path "*/node_modules/*" -maxdepth 5 > /tmp/php_files.txt
+          if [ -f "phpstan.neon" ] || [ -f "phpstan.neon.dist" ]; then
+            STAN_OUT=$(head -20 /tmp/php_files.txt | xargs phpstan analyse --no-progress --error-format=raw 2>&1) || true
+          else
+            STAN_OUT=$(head -20 /tmp/php_files.txt | xargs phpstan analyse --level=5 --no-progress --error-format=raw 2>&1) || true
+          fi
+
+          # Conta erros — formato raw: "arquivo:linha:mensagem"
+          STAN_ERRORS=$(echo "$STAN_OUT" | grep -cE "^[^:]+\.php:[0-9]+:" || echo "0")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$STAN_ERRORS" -gt 0 ] 2>/dev/null; then
+            echo "❌ **$STAN_ERRORS erro(s) PHPStan**" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_error=true" >> $GITHUB_ENV
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Tipo | Arquivo | Linha | Regra | Problema |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|---------|-------|-------|----------|" >> $GITHUB_STEP_SUMMARY
+            echo "$STAN_OUT" | grep -E "^[^:]+\.php:[0-9]+:" | head -30 | while IFS= read -r rawline; do
+              FILE_PATH=$(echo "$rawline" | cut -d: -f1)
+              FILE_NAME=$(echo "$FILE_PATH" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\./||")
+              LINE_NUM=$(echo "$rawline" | cut -d: -f2)
+              MSG=$(echo "$rawline" | cut -d: -f3- | sed 's/^ *//' | cut -c1-60 | tr -d '|')
+              echo "| ❌ | \`$FILE_NAME\` | $LINE_NUM | \`phpstan\` | $MSG |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "✅ PHPStan sem erros" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: 🔒 Segurança PHP — Vulnerabilidades
+        if: steps.detect-lang.outputs.has_php == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🔒 Segurança PHP — Análise de Vulnerabilidades" >> $GITHUB_STEP_SUMMARY
+
+          find . -name "*.php" \
+            -not -path "*/vendor/*" -not -path "*/node_modules/*" \
+            -maxdepth 6 | while read -r phpfile; do
+
+            RELFILE=$(echo "$phpfile" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\.\?/||")
+
+            # 1. SQL Injection direto
+            grep -nP '(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).+\$_(GET|POST|REQUEST|COOKIE)' "$phpfile" 2>/dev/null | while IFS= read -r match; do
+              LINE=$(echo "$match" | cut -d: -f1)
+              echo "ROW|⚠️|$RELFILE|$LINE|sql-injection|SQL Injection: input do usuário direto em query SQL"
+            done
+
+            # 2. SQL Injection via variável intermediária
+            TAINTED=$(grep -oP '^\$\K[a-zA-Z_][a-zA-Z0-9_]*(?= = \$_(GET|POST|REQUEST|COOKIE))' "$phpfile" 2>/dev/null | sort -u)
+            for VAR in $TAINTED; do
+              SQL_PAT=$(printf '(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE).*\$%s' "$VAR")
+              grep -nP "$SQL_PAT" "$phpfile" 2>/dev/null | while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                echo "ROW|⚠️|$RELFILE|$LINE|sql-injection|SQL Injection: \$$VAR vem de input do usuário"
+              done
+              XSS_PAT=$(printf '(echo|print)\s+\$%s\b' "$VAR")
+              grep -nP "$XSS_PAT" "$phpfile" 2>/dev/null | while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                echo "ROW|⚠️|$RELFILE|$LINE|xss|XSS: \$$VAR (input do usuário) exibida sem sanitização"
+              done
+            done
+
+            # 3. XSS direto
+            grep -nP '(echo|print)\s+\$_(GET|POST|REQUEST|COOKIE)' "$phpfile" 2>/dev/null | while IFS= read -r match; do
+              LINE=$(echo "$match" | cut -d: -f1)
+              echo "ROW|⚠️|$RELFILE|$LINE|xss|XSS: dados do usuário exibidos sem htmlspecialchars()"
+            done
+
+            # 4. Command Injection
+            grep -nP '(system|exec|shell_exec|passthru|popen)\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)' "$phpfile" 2>/dev/null | while IFS= read -r match; do
+              LINE=$(echo "$match" | cut -d: -f1)
+              echo "ROW|⚠️|$RELFILE|$LINE|command-injection|Command Injection: input do usuário executado como comando"
+            done
+
+            # 5. File Inclusion
+            grep -nP '(include|require|include_once|require_once)\s*\(\s*\$_(GET|POST|REQUEST)' "$phpfile" 2>/dev/null | while IFS= read -r match; do
+              LINE=$(echo "$match" | cut -d: -f1)
+              echo "ROW|⚠️|$RELFILE|$LINE|file-inclusion|File Inclusion: arquivo incluído com base em input do usuário"
+            done
+
+            # 6. Code Injection — eval() com superglobal direto
+            grep -nP 'eval\s*\(\s*\$_(GET|POST|REQUEST|COOKIE)' "$phpfile" 2>/dev/null | while IFS= read -r match; do
+              LINE=$(echo "$match" | cut -d: -f1)
+              echo "ROW|⚠️|$RELFILE|$LINE|code-injection|Code Injection: eval() executando input do usuário diretamente"
+            done
+
+            # 7. Code Injection — eval() via variável tainted
+            for VAR in $TAINTED; do
+              EVAL_PAT=$(printf 'eval\s*\(\s*\$%s' "$VAR")
+              grep -nP "$EVAL_PAT" "$phpfile" 2>/dev/null | while IFS= read -r match; do
+                LINE=$(echo "$match" | cut -d: -f1)
+                echo "ROW|⚠️|$RELFILE|$LINE|code-injection|Code Injection: eval() com \$$VAR (input do usuário)"
+              done
+            done
+
+          done > /tmp/php_vulns.txt
+
+          VULN_COUNT=$(grep -c "^ROW" /tmp/php_vulns.txt 2>/dev/null || echo "0")
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "$VULN_COUNT" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$VULN_COUNT aviso(s) de segurança** PHP — revisar antes do deploy" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Tipo | Arquivo | Linha | Regra | Problema |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|---------|-------|-------|----------|" >> $GITHUB_STEP_SUMMARY
+            grep "^ROW" /tmp/php_vulns.txt | while IFS='|' read -r _ icon file line rule msg; do
+              echo "| $icon | \`$file\` | $line | \`$rule\` | $msg |" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "✅ Nenhuma vulnerabilidade óbvia detectada no PHP" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Python ───────────────────────────────
+      - name: Setup Python
+        if: steps.detect-lang.outputs.has_py == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Flake8 + Black — Python
+        if: steps.detect-lang.outputs.has_py == 'true'
+        continue-on-error: true
+        run: |
+          pip install flake8 black --quiet
+          echo "### 🐍 Flake8 — Python" >> $GITHUB_STEP_SUMMARY
+          FLAKE_OUT=$(flake8 . --max-line-length=120 --statistics 2>&1) || true
+          echo "$FLAKE_OUT" | tail -20 >> $GITHUB_STEP_SUMMARY
+          FLAKE_ERRORS=$(echo "$FLAKE_OUT" | grep -c " E[0-9]" || echo "0")
+          FLAKE_WARNS=$(echo "$FLAKE_OUT" | grep -c " W[0-9]" || echo "0")
+          if [ "$FLAKE_ERRORS" -gt 0 ] 2>/dev/null; then
+            echo "❌ **$FLAKE_ERRORS erro(s) Python** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_error=true" >> $GITHUB_ENV
+          elif [ "$FLAKE_WARNS" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$FLAKE_WARNS aviso(s) Python** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+          else
+            echo "✅ Python sem erros" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Go ───────────────────────────────────
+      - name: Setup Go
+        if: steps.detect-lang.outputs.has_go == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Go Vet
+        if: steps.detect-lang.outputs.has_go == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🐹 Go Vet" >> $GITHUB_STEP_SUMMARY
+          GO_OUT=$(go vet ./... 2>&1) || true
+          echo "$GO_OUT" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$GO_OUT" ]; then
+            echo "❌ Go vet encontrou problemas" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_error=true" >> $GITHUB_ENV
+          else
+            echo "✅ Go sem erros" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Kotlin (Android) ─────────────────────
+      - name: Setup Java para Kotlin
+        if: steps.detect-lang.outputs.has_kt == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: ktlint — Kotlin
+        if: steps.detect-lang.outputs.has_kt == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🤖 ktlint — Kotlin / Android" >> $GITHUB_STEP_SUMMARY
+          curl -sSLO https://github.com/pinterest/ktlint/releases/latest/download/ktlint
+          chmod +x ktlint
+          KT_OUT=$(./ktlint --relative --reporter=plain "**/*.kt" "**/*.kts" 2>&1) || true
+          echo "$KT_OUT" | grep -v "^$" | head -40 >> $GITHUB_STEP_SUMMARY
+          rm -f ktlint
+          KT_ERRORS=$(echo "$KT_OUT" | grep -c " error:" || echo "0")
+          KT_WARNS=$(echo "$KT_OUT" | grep -c " warning:\|ktlint" || echo "0")
+          if [ "$KT_ERRORS" -gt 0 ] 2>/dev/null; then
+            echo "❌ **$KT_ERRORS erro(s) Kotlin** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_error=true" >> $GITHUB_ENV
+          elif [ "$KT_WARNS" -gt 0 ] 2>/dev/null; then
+            echo "⚠️ **$KT_WARNS aviso(s) Kotlin** encontrado(s)" >> $GITHUB_STEP_SUMMARY
+            echo "has_lint_warning=true" >> $GITHUB_ENV
+          else
+            echo "✅ Kotlin sem erros" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ── Swift (iOS) — job separado macos-latest ──
+      - name: Swift — Verificacao basica
+        if: steps.detect-lang.outputs.has_swift == 'true'
+        continue-on-error: true
+        run: |
+          echo "### 🍎 Swift / iOS — Verificacao" >> $GITHUB_STEP_SUMMARY
+          SWIFT_FILES=$(find . -name "*.swift" -not -path "*/.github/*" -not -path "*/build/*" | wc -l)
+          echo "Arquivos Swift encontrados: **$SWIFT_FILES**" >> $GITHUB_STEP_SUMMARY
+          echo "Analise completa com SwiftLint disponivel no job **swiftlint** (runner macOS)." >> $GITHUB_STEP_SUMMARY
+          git diff --name-only HEAD~1 HEAD 2>/dev/null | grep "\.swift$" | \
+            awk '{print "- " $0}' >> $GITHUB_STEP_SUMMARY || true
+
+      # ── Verificação final ──────────────────────
+      # ❌ Erros   → exit 1 (job vermelho no Actions)
+      # ⚠️ Warnings → exit 0 (job verde, mas ⚠️ visível no Summary e Discord)
+      # ✅ Limpo   → exit 0
+      - name: Resultado final da qualidade de código
+        id: final-status
+        if: always()
+        run: |
+          echo "---" >> $GITHUB_STEP_SUMMARY
+
+          # Compila resumo de problemas para passar ao job de notificação Discord
+          ISSUES=""
+
+          # Compila problemas em arquivo temporário com quebras reais de linha
+          > /tmp/issues_discord.txt
+
+          if [ -f /tmp/eslint_errs.txt ] && [ -s /tmp/eslint_errs.txt ]; then
+            COUNT=$(wc -l < /tmp/eslint_errs.txt | tr -d ' ')
+            echo "🔍 JS/TS — ${COUNT} problema(s):" >> /tmp/issues_discord.txt
+            head -5 /tmp/eslint_errs.txt | while IFS='|' read -r _ icon file line rule msg; do
+              FNAME=$(echo "$file" | sed 's|.*/||')
+              echo "  $icon ${FNAME} L${line}: ${msg}" >> /tmp/issues_discord.txt
+            done
+          fi
+
+          if [ -f /tmp/html_issues.txt ] && [ -s /tmp/html_issues.txt ]; then
+            COUNT=$(wc -l < /tmp/html_issues.txt | tr -d ' ')
+            echo "🌐 HTML — ${COUNT} problema(s):" >> /tmp/issues_discord.txt
+            head -3 /tmp/html_issues.txt | while IFS='|' read -r _ file line tag msg rule; do
+              FNAME=$(echo "$file" | sed 's|.*/||')
+              echo "  ⚠️ ${FNAME} L${line}: ${msg}" >> /tmp/issues_discord.txt
+            done
+          fi
+
+          if [ -f /tmp/php_vulns.txt ] && [ -s /tmp/php_vulns.txt ]; then
+            COUNT=$(grep -c "^ROW" /tmp/php_vulns.txt 2>/dev/null || echo 0)
+            echo "🔒 PHP — ${COUNT} aviso(s):" >> /tmp/issues_discord.txt
+            grep "^ROW" /tmp/php_vulns.txt | head -3 | while IFS='|' read -r _ icon file line rule msg; do
+              FNAME=$(echo "$file" | sed 's|.*/||')
+              echo "  $icon ${FNAME} L${line}: ${msg}" >> /tmp/issues_discord.txt
+            done
+          fi
+
+          if [ ! -s /tmp/issues_discord.txt ]; then
+            echo "✅ Nenhum problema encontrado" > /tmp/issues_discord.txt
+          fi
+
+          # Codifica em base64 para passar entre jobs (preserva quebras de linha)
+          ISSUES_ENCODED=$(head -c 900 /tmp/issues_discord.txt | base64 -w 0)
+          echo "issues_summary=${ISSUES_ENCODED}" >> $GITHUB_OUTPUT
+
+          if [ "$has_lint_error" = "true" ]; then
+            echo "## ❌ Qualidade de Código — REPROVADA" >> $GITHUB_STEP_SUMMARY
+            echo "Erros críticos encontrados. Corrija antes de fazer merge." >> $GITHUB_STEP_SUMMARY
+            echo "quality_status=error" >> $GITHUB_OUTPUT
+            exit 1
+          elif [ "$has_lint_warning" = "true" ]; then
+            echo "## ⚠️ Qualidade de Código — AVISOS ENCONTRADOS" >> $GITHUB_STEP_SUMMARY
+            echo "Warnings detectados. Recomendado revisar os itens acima." >> $GITHUB_STEP_SUMMARY
+            echo "quality_status=warning" >> $GITHUB_OUTPUT
+          else
+            echo "## ✅ Qualidade de Código — APROVADA" >> $GITHUB_STEP_SUMMARY
+            echo "quality_status=ok" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Verificar Arquivos de Configuração Sensíveis
+        run: |
+          echo "### 🔒 Verificação de Arquivos Sensíveis" >> $GITHUB_STEP_SUMMARY
+          SENSITIVE_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | \
+            grep -E "\.(env|pem|key|p12|pfx|secret)$|id_rsa|id_dsa" || true)
+          if [ -n "$SENSITIVE_FILES" ]; then
+            echo "⚠️ **ATENÇÃO**: Arquivos potencialmente sensíveis detectados:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "$SENSITIVE_FILES" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Nenhum arquivo sensível detectado." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Verificar Arquivos Grandes
+        run: |
+          echo "### 📦 Verificação de Tamanho de Arquivos" >> $GITHUB_STEP_SUMMARY
+          LARGE_FILES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | \
+            xargs -I{} sh -c 'test -f "{}" && stat -c "%s %n" "{}"' 2>/dev/null | \
+            awk '$1 > 1048576 {print $2, "(" int($1/1024) "KB)"}' || true)
+          if [ -n "$LARGE_FILES" ]; then
+            echo "⚠️ Arquivos maiores que 1MB:" >> $GITHUB_STEP_SUMMARY
+            echo "$LARGE_FILES" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "✅ Nenhum arquivo muito grande detectado." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ─────────────────────────────────────────────
+  # JOB 3: Scan de Segurança com Trivy
+  # ─────────────────────────────────────────────
+  security-scan:
+    name: 🛡️ Scan de Segurança e Vulnerabilidades
+    runs-on: ubuntu-latest
+    needs: commit-metadata
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trivy - Scan de Vulnerabilidades em Dependências
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+
+      - name: Upload SARIF ao GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Trivy - Resumo Legível
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '0'
+        continue-on-error: true
+
+      - name: Gerar Resumo de Segurança
+        run: |
+          echo "### 🛡️ Resumo do Scan de Segurança" >> $GITHUB_STEP_SUMMARY
+          echo "Scan realizado com **Trivy** em: \`$(date -u '+%Y-%m-%d %H:%M UTC')\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📊 Resultados disponíveis na aba **Security → Vulnerability alerts**" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # JOB 4: Scan de Segredos com Gitleaks
+  # ─────────────────────────────────────────────
+  secrets-scan:
+    name: 🔐 Detecção de Segredos Expostos
+    runs-on: ubuntu-latest
+    needs: commit-metadata
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks - Scan de Segredos
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        continue-on-error: true
+
+      - name: Resumo de Detecção de Segredos
+        run: |
+          echo "### 🔐 Detecção de Segredos" >> $GITHUB_STEP_SUMMARY
+          echo "Scan realizado com **Gitleaks** para detectar:" >> $GITHUB_STEP_SUMMARY
+          echo "- API Keys e tokens expostos" >> $GITHUB_STEP_SUMMARY
+          echo "- Senhas em texto claro" >> $GITHUB_STEP_SUMMARY
+          echo "- Chaves privadas (RSA, SSH)" >> $GITHUB_STEP_SUMMARY
+          echo "- Credenciais de banco de dados" >> $GITHUB_STEP_SUMMARY
+          echo "- Tokens OAuth e JWT" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────
+  # JOB 5: Geração de Relatório Consolidado (IA)
+  # ─────────────────────────────────────────────
+  generate-report:
+    name: 📊 Gerar Relatório com IA
+    runs-on: ubuntu-latest
+    needs: [commit-metadata, code-quality, security-scan, secrets-scan]
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Coletar Diff do Commit
+        id: diff
+        run: |
+          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null | head -200 || git show HEAD | head -200)
+          echo "diff<<EOF" >> $GITHUB_OUTPUT
+          echo "$DIFF" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Gerar Resumo IA via OpenAI API
+        id: ai-summary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          AUTHOR: ${{ needs.commit-metadata.outputs.author_name }}
+          COMMIT_MSG: ${{ needs.commit-metadata.outputs.commit_message }}
+          FILES_CHANGED: ${{ needs.commit-metadata.outputs.files_changed }}
+        run: |
+          DIFF=$(git diff HEAD~1 HEAD 2>/dev/null | head -60 || git show HEAD | head -60)
+          MSG="Analise o commit. Autor:$AUTHOR. Mensagem:$COMMIT_MSG. Arquivos:$FILES_CHANGED. Diff:$DIFF. Responda em portugues: 1-Proposito 2-Impacto 3-Qualidade 4-Riscos"
+          PAYLOAD=$(jq -nc --arg m "$MSG" '{"model":"gpt-4o","max_tokens":600,"messages":[{"role":"system","content":"Assistente tecnico, responda em portugues brasileiro."},{"role":"user","content":$m}]}')
+          RESPONSE=$(echo "$PAYLOAD" | curl -sf -X POST https://api.openai.com/v1/chat/completions -H "Authorization: Bearer $OPENAI_API_KEY" -H "Content-Type: application/json" -d @- || echo '{"error":{"message":"curl falhou"}}')
+          SUMMARY=$(echo "$RESPONSE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(d['choices'][0]['message']['content'] if 'choices' in d else 'Erro: '+str(d.get('error',{}).get('message','')))")
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Gerar Relatório Final Consolidado
+        env:
+          AUTHOR: ${{ needs.commit-metadata.outputs.author_name }}
+          EMAIL: ${{ needs.commit-metadata.outputs.author_email }}
+          SHA: ${{ needs.commit-metadata.outputs.commit_sha }}
+          BRANCH: ${{ needs.commit-metadata.outputs.branch }}
+          COMMIT_MSG: ${{ needs.commit-metadata.outputs.commit_message }}
+          FILES: ${{ needs.commit-metadata.outputs.files_changed }}
+          TIMESTAMP: ${{ needs.commit-metadata.outputs.timestamp }}
+          QUALITY_RESULT: ${{ needs.code-quality.result }}
+          QUALITY_STATUS: ${{ needs.code-quality.outputs.quality_status }}
+          SECURITY_RESULT: ${{ needs.security-scan.result }}
+          SECRETS_RESULT: ${{ needs.secrets-scan.result }}
+          AI_SUMMARY: ${{ steps.ai-summary.outputs.summary }}
+        run: |
+          # Qualidade: usa o output granular do job (error/warning/ok)
+          STATUS_SECURITY="✅"
+          STATUS_SECRETS="✅"
+          if [ "$QUALITY_STATUS" = "error" ] || [ "$QUALITY_RESULT" = "failure" ]; then
+            STATUS_QUALITY="❌ Erros encontrados"
+          elif [ "$QUALITY_STATUS" = "warning" ]; then
+            STATUS_QUALITY="⚠️ Avisos encontrados"
+          else
+            STATUS_QUALITY="✅ Aprovado"
+          fi
+          [ "$SECURITY_RESULT" != "success" ] && STATUS_SECURITY="⚠️"
+          [ "$SECRETS_RESULT"  != "success" ] && STATUS_SECRETS="⚠️"
+
+          cat >> $GITHUB_STEP_SUMMARY << REPORT
+
+          ---
+          # 📊 Relatório de Monitoramento de Commit
+
+          ## 👤 Informações do Desenvolvedor
+          | Campo       | Valor            |
+          |-------------|------------------|
+          | **Autor**   | $AUTHOR          |
+          | **E-mail**  | $EMAIL           |
+          | **Branch**  | \`$BRANCH\`      |
+          | **SHA**     | \`${SHA:0:8}\`   |
+          | **Data**    | $TIMESTAMP       |
+
+          ## 📝 Commit
+          > $COMMIT_MSG
+
+          **Arquivos alterados:** $FILES
+
+          ## 🤖 Análise de IA
+          $AI_SUMMARY
+
+          ## 📋 Status dos Checks
+          | Check               | Status             |
+          |---------------------|--------------------|
+          | 🧹 Qualidade Código | $STATUS_QUALITY    |
+          | 🛡️ Vulnerabilidades | $STATUS_SECURITY   |
+          | 🔐 Segredos Expostos| $STATUS_SECRETS    |
+
+          ---
+          *Relatório gerado automaticamente em $(date -u '+%Y-%m-%d %H:%M UTC')*
+          REPORT
+
+      - name: Comentar no PR (se aplicável)
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        env:
+          AI_SUMMARY: ${{ steps.ai-summary.outputs.summary }}
+          AUTHOR: ${{ needs.commit-metadata.outputs.author_name }}
+          FILES: ${{ needs.commit-metadata.outputs.files_changed }}
+          QUALITY_RESULT: ${{ needs.code-quality.result }}
+          QUALITY_STATUS: ${{ needs.code-quality.outputs.quality_status }}
+          SECURITY_RESULT: ${{ needs.security-scan.result }}
+          SECRETS_RESULT: ${{ needs.secrets-scan.result }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const q = process.env.QUALITY_RESULT === 'success' ? '✅' : '⚠️';
+            const s = process.env.SECURITY_RESULT === 'success' ? '✅' : '⚠️';
+            const sec = process.env.SECRETS_RESULT === 'success' ? '✅' : '⚠️';
+
+            const body = `## 🔍 Relatório de Monitoramento de Commit
+
+            **Autor:** ${process.env.AUTHOR} | **Arquivos:** ${process.env.FILES}
+
+            ### 🤖 Análise Automática (IA)
+            ${process.env.AI_SUMMARY}
+
+            ### 📋 Checks
+            | Check | Status |
+            |-------|--------|
+            | 🧹 Qualidade de Código | ${q} |
+            | 🛡️ Vulnerabilidades | ${s} |
+            | 🔐 Segredos Expostos | ${sec} |
+
+            <sub>Gerado automaticamente por GitHub Actions · ${new Date().toISOString()}</sub>`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      # ─────────────────────────────────────────────
+      # Notificação Discord
+      # ─────────────────────────────────────────────
+      - name: Notificar Discord
+        if: always()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          AUTHOR:         ${{ needs.commit-metadata.outputs.author_name }}
+          EMAIL:          ${{ needs.commit-metadata.outputs.author_email }}
+          BRANCH:         ${{ needs.commit-metadata.outputs.branch }}
+          SHA:            ${{ needs.commit-metadata.outputs.commit_sha }}
+          COMMIT_MSG:     ${{ needs.commit-metadata.outputs.commit_message }}
+          FILES:          ${{ needs.commit-metadata.outputs.files_changed }}
+          QUALITY_RESULT: ${{ needs.code-quality.result }}
+          QUALITY_STATUS: ${{ needs.code-quality.outputs.quality_status }}
+          ISSUES_ENCODED: ${{ needs.code-quality.outputs.issues_summary }}
+          SECURITY_RESULT: ${{ needs.security-scan.result }}
+          SECRETS_RESULT: ${{ needs.secrets-scan.result }}
+          AI_SUMMARY:     ${{ steps.ai-summary.outputs.summary }}
+          REPO:           ${{ github.repository }}
+          RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -z "$DISCORD_WEBHOOK_URL" ] && echo "DISCORD_WEBHOOK_URL nao configurado, pulando." && exit 0
+
+          # Determina cor e status geral
+          COLOR=3066993   # verde padrão
+          TITLE_EMOJI="✅"
+
+          # Qualidade: 3 níveis
+          if [ "$QUALITY_STATUS" = "error" ] || [ "$QUALITY_RESULT" = "failure" ]; then
+            Q="❌ erros encontrados"
+            COLOR=15158332; TITLE_EMOJI="❌"
+          elif [ "$QUALITY_STATUS" = "warning" ]; then
+            Q="⚠️ avisos encontrados"
+            [ "$COLOR" = "3066993" ] && COLOR=16776960 && TITLE_EMOJI="⚠️"  # amarelo
+          else
+            Q="✅ aprovado"
+          fi
+
+          badge(){ [ "$1" = "success" ] && echo "✅ passou" || echo "❌ falhou"; }
+          S=$(badge "$SECURITY_RESULT")
+          SEC=$(badge "$SECRETS_RESULT")
+          [ "$SECURITY_RESULT" != "success" ] && { COLOR=15158332; TITLE_EMOJI="❌"; }
+          [ "$SECRETS_RESULT"  != "success" ] && { COLOR=15158332; TITLE_EMOJI="❌"; }
+
+          # Decodifica resumo de problemas passado via output do job code-quality
+          if [ -n "$ISSUES_ENCODED" ]; then
+            ISSUES_SHORT=$(echo "$ISSUES_ENCODED" | base64 -d 2>/dev/null || echo "✅ Nenhum problema encontrado")
+          else
+            ISSUES_SHORT="✅ Nenhum problema encontrado"
+          fi
+
+          # Resumo da IA (primeiras 600 chars para não estourar limite Discord)
+          AI_SHORT=$(echo "$AI_SUMMARY" | head -c 600)
+          [ ${#AI_SUMMARY} -gt 600 ] && AI_SHORT="${AI_SHORT}..."
+
+          PAYLOAD=$(jq -nc             --arg title  "$TITLE_EMOJI Novo commit em ${REPO##*/}"             --arg author "$AUTHOR <$EMAIL>"             --arg branch "$BRANCH"             --arg sha    "${SHA:0:8}"             --arg msg    "$COMMIT_MSG"             --arg files  "$FILES arquivo(s) alterado(s)"             --arg ai     "$AI_SHORT"             --arg q      "$Q"             --arg s      "$S"             --arg sec    "$SEC"             --arg url    "$RUN_URL"             --argjson color "$COLOR"             '{
+              embeds: [{
+                title: $title,
+                color: $color,
+                url:   $url,
+                fields: [
+                  { name: "👤 Autor",       value: $author, inline: false },
+                  { name: "🌿 Branch",      value: $branch, inline: true  },
+                  { name: "🔖 SHA",         value: $sha,    inline: true  },
+                  { name: "📝 Mensagem",    value: $msg,    inline: false },
+                  { name: "📂 Alterações",  value: $files,  inline: false },
+                  { name: "🤖 Análise IA",  value: $ai,     inline: false },
+                  { name: "🧹 Qualidade",   value: $q,      inline: true  },
+                  { name: "🛡️ Vulnerabilidades", value: $s, inline: true  },
+                  { name: "🔐 Segredos",    value: $sec,    inline: true  }
+                ],
+                footer: { text: "GitHub Actions · \($title | ltrimstr("✅ ") | ltrimstr("⚠️ "))" },
+                timestamp: (now | todate)
+              }]
+            }')
+
+          HTTP=$(curl -s -o /tmp/discord_resp.txt -w "%{http_code}"             -X POST "$DISCORD_WEBHOOK_URL"             -H "Content-Type: application/json"             -d "$PAYLOAD")
+
+          if [ "$HTTP" = "204" ]; then
+            echo "Notificacao Discord enviada com sucesso (HTTP 204)"
+          else
+            echo "Aviso: Discord retornou HTTP $HTTP"
+            cat /tmp/discord_resp.txt
+          fi
+
+  # ─────────────────────────────────────────────
+  # JOB 6: SwiftLint (iOS) — runner macOS
+  # Roda separado pois exige macos-latest
+  # ─────────────────────────────────────────────
+  swiftlint:
+    name: 🍎 SwiftLint — Swift / iOS
+    runs-on: macos-latest
+    needs: commit-metadata
+    if: always()
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verificar arquivos Swift
+        id: check-swift
+        run: |
+          COUNT=$(find . -name "*.swift" -not -path "*/.github/*" -not -path "*/build/*" | wc -l)
+          echo "swift_count=$COUNT" >> $GITHUB_OUTPUT
+          echo "Arquivos Swift encontrados: $COUNT"
+
+      - name: Instalar e rodar SwiftLint
+        if: steps.check-swift.outputs.swift_count != '0'
+        continue-on-error: true
+        run: |
+          echo "### 🍎 SwiftLint — Swift / iOS" >> $GITHUB_STEP_SUMMARY
+          if ! command -v swiftlint &>/dev/null; then
+            brew install swiftlint 2>/dev/null || true
+          fi
+          if command -v swiftlint &>/dev/null; then
+            swiftlint lint --reporter github-actions-logging 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || true
+            VIOLATIONS=$(swiftlint lint --quiet 2>/dev/null | wc -l || echo "0")
+            echo "Total de ocorrencias: **$VIOLATIONS**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ SwiftLint nao disponivel neste runner." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Resumo sem Swift
+        if: steps.check-swift.outputs.swift_count == '0'
+        run: |
+          echo "### 🍎 SwiftLint — Swift / iOS" >> $GITHUB_STEP_SUMMARY
+          echo "⏭️ Ignorado — nenhum arquivo .swift encontrado no repositorio." >> $GITHUB_STEP_SUMMARY
