@@ -566,8 +566,9 @@ jobs:
 
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "$STAN_ERRORS" -gt 0 ] 2>/dev/null; then
-            echo "❌ **$STAN_ERRORS erro(s) PHPStan**" >> $GITHUB_STEP_SUMMARY
-            echo "has_lint_error=true" >> $GITHUB_ENV
+            # Conta erros reais vs avisos (mensagens conhecidas que sao apenas avisos)
+            STAN_REAL_ERRORS=0
+            STAN_REAL_WARNS=0
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "| Tipo | Arquivo | Linha | Regra | Problema |" >> $GITHUB_STEP_SUMMARY
             echo "|------|---------|-------|-------|----------|" >> $GITHUB_STEP_SUMMARY
@@ -576,12 +577,30 @@ jobs:
               FILE_NAME=$(echo "$FILE_PATH" | sed "s|.*/work/[^/]*/[^/]*/||" | sed "s|^\./||")
               LINE_NUM=$(echo "$rawline" | cut -d: -f2)
               MSG=$(echo "$rawline" | cut -d: -f3- | sed 's/^ *//' | cut -c1-60 | tr -d '|')
-              echo "| ❌ | \`$FILE_NAME\` | $LINE_NUM | \`phpstan\` | $MSG |" >> $GITHUB_STEP_SUMMARY
+              # Mensagens que sao apenas avisos logicos (nao erros criticos)
+              if echo "$MSG" | grep -qiE "always false|always true|always null|dead code|unreachable"; then
+                ICON="⚠️"
+                echo "WARN" >> /tmp/stan_warn_count.txt
+              else
+                ICON="❌"
+                echo "ERROR" >> /tmp/stan_err_count.txt
+              fi
+              echo "| $ICON | \`$FILE_NAME\` | $LINE_NUM | \`phpstan\` | $MSG |" >> $GITHUB_STEP_SUMMARY
             done
+            STAN_REAL_ERRORS=$(grep -c "ERROR" /tmp/stan_err_count.txt 2>/dev/null || echo 0)
+            STAN_REAL_WARNS=$(grep -c "WARN" /tmp/stan_warn_count.txt 2>/dev/null || echo 0)
+            rm -f /tmp/stan_err_count.txt /tmp/stan_warn_count.txt
+            echo "" >> $GITHUB_STEP_SUMMARY
+            if [ "${STAN_REAL_ERRORS:-0}" -gt 0 ] 2>/dev/null; then
+              echo "❌ **$STAN_REAL_ERRORS erro(s)** e **$STAN_REAL_WARNS aviso(s)** PHPStan" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_error=true" >> $GITHUB_ENV
+            else
+              echo "⚠️ **$STAN_REAL_WARNS aviso(s) PHPStan**" >> $GITHUB_STEP_SUMMARY
+              echo "has_lint_warning=true" >> $GITHUB_ENV
+            fi
           else
             echo "✅ PHPStan sem erros" >> $GITHUB_STEP_SUMMARY
           fi
-
       - name: 🔒 Segurança PHP — Vulnerabilidades
         if: steps.detect-lang.outputs.has_php == 'true'
         continue-on-error: true
