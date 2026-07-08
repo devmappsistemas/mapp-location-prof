@@ -11,7 +11,7 @@
  *  4. Ativado e permite = 'S'
  *  5. Validar profissional existe e ativo = 'S'
  *  6. Listar serviços com status = 'A'; para cada serviço, enderecoServico sem chegada
- *  7. Por par (serviço, endereço): distância ≤ raio → push ou UPDATE. Se confirmarProfissional = 'S', envia uma única notificação mesmo com vários endereços no raio.
+ *  7. Por par (serviço, endereço): distância ≤ raio → bloqueia se outro ponto tem chegada sem saída → push ou UPDATE. Se confirmarProfissional = 'S', envia uma única notificação mesmo com vários endereços no raio.
  *
  * @module services/chegueiEnderecoService
  */
@@ -46,6 +46,19 @@ function hasValue(v) {
 
 function isFinalizado(enderecoItem) {
   return hasValue(enderecoItem?.saida);
+}
+
+/** Chegada registrada mas ponto ainda não finalizado (sem saída). */
+function temChegadaSemSaida(enderecoItem) {
+  return hasValue(enderecoItem?.chegada) && !isFinalizado(enderecoItem);
+}
+
+/** Outros endereços do serviço com chegada sem saída (profissional ainda no ponto). */
+function outrosPontosEmAberto(enderecosServico, idEnderecoAtual) {
+  return enderecosServico.filter(
+    (item) =>
+      String(item?.idEndereco) !== String(idEnderecoAtual) && temChegadaSemSaida(item)
+  );
 }
 
 /** Menor `ponto` numérico entre endereços ainda sem chegada; null se nenhum válido. */
@@ -400,6 +413,32 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
         continue;
       }
 
+      const pontosEmAberto = outrosPontosEmAberto(enderecosServico, idEndereco);
+      if (pontosEmAberto.length > 0) {
+        displayLog("info", "[chegueiEndereco] ponto anterior nao finalizado", {
+          domain,
+          idProf,
+          idServico,
+          idEndereco,
+          pontosEmAberto: pontosEmAberto.map((item) => ({
+            idEndereco: item.idEndereco,
+            ponto: item.ponto,
+          })),
+        });
+        processados.push({
+          idServico,
+          idEndereco,
+          acao: "ponto_anterior_nao_finalizado",
+          message:
+            "Cheguei automático bloqueado: finalize o ponto em que você está antes de registrar chegada em outro ponto.",
+          pontosEmAberto: pontosEmAberto.map((item) => ({
+            idEndereco: item.idEndereco,
+            ponto: item.ponto,
+          })),
+        });
+        continue;
+      }
+
       const pontoAtual = parseInt(endServ?.ponto, 10);
       const ehRetorno =
         servicoTemRetorno &&
@@ -472,6 +511,7 @@ export async function processarChegueiEndereco({ domain, idProf, la, lo, configP
           { idEndereco: idEndereco, idServico: idServico }
         );
         if (updated) {
+          endServ.chegada = agora;
           const logCtx = {
             domain,
             idProf,
