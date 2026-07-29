@@ -5,6 +5,7 @@ import { getSaoPauloISOString } from "./utils/dateHelper.js";
 import { parseJsonWithWorker } from "./utils/parseJsonWorker.js";
 import v1 from "./routes/index.js";
 import { processarSeDisponivel } from "./services/profissionaisLocalizacoesService.js";
+import healthRoute from "./health.js";
 const app = express();
 const LOCATIONS_SOURCE_URL = process.env.LOCATIONS_SOURCE_URL || "http://localhost:5564/locations";
 const LOCATIONS_FETCH_TIMEOUT_MS = Math.max(
@@ -66,6 +67,10 @@ app.use((req, res, next) => {
   }
   return express.json({ limit: "5mb" })(req, res, next);
 });
+
+// Liveness do processo. Este serviço não tem domínio público: quem o alcança
+// é o relay do rastreamentoSocket, via localhost.
+app.use(healthRoute);
 
 app.use("/api/v1", v1);
 
